@@ -1,6 +1,5 @@
 import httpx
 import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import settings
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -18,7 +18,7 @@ from app.schemas.business import BusinessProfile
 class Metadata(BaseModel):
     model_config = {"protected_namespaces": ()}
 
-    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     model_used: str = "llm-brain"
     confidence: float = 0.0
     processing_time_ms: int = 0

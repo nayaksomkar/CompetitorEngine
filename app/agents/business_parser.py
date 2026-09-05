@@ -108,12 +108,19 @@ Rules:
         # Try to find JSON in markdown code blocks
         if "```json" in text:
             start = text.index("```json") + 7
-            end = text.index("```", start)
-            return text[start:end].strip()
+            try:
+                end = text.index("```", start)
+                return text[start:end].strip()
+            except ValueError:
+                # No closing fence - take everything after opener
+                return text[start:].strip()
         elif "```" in text:
             start = text.index("```") + 3
-            end = text.index("```", start)
-            return text[start:end].strip()
+            try:
+                end = text.index("```", start)
+                return text[start:end].strip()
+            except ValueError:
+                return text[start:].strip()
 
         # Try to find raw JSON object
         if "{" in text and "}" in text:

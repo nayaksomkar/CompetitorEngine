@@ -60,12 +60,18 @@ Rules:
         text = text.strip()
         if "```json" in text:
             start = text.index("```json") + 7
-            end = text.index("```", start)
-            return text[start:end].strip()
+            try:
+                end = text.index("```", start)
+                return text[start:end].strip()
+            except ValueError:
+                return text[start:].strip()
         elif "```" in text:
             start = text.index("```") + 3
-            end = text.index("```", start)
-            return text[start:end].strip()
+            try:
+                end = text.index("```", start)
+                return text[start:end].strip()
+            except ValueError:
+                return text[start:].strip()
         if "{" in text and "}" in text:
             start = text.index("{")
             end = text.rindex("}") + 1

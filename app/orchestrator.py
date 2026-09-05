@@ -29,28 +29,40 @@ class Orchestrator:
         self,
         llm_client: AgentLLMClient | None = None,
     ):
-        # Create agent-specific LLM clients with their configured providers
-        self.business_parser = BusinessParserAgent(
-            AgentLLMClient("business_parser")
-        )
-        self.research_planner = ResearchPlannerAgent(
-            AgentLLMClient("research_planner")
-        )
-        self.data_summarizer = DataSummaryAgent(
-            AgentLLMClient("research_planner")
-        )
-        self.competitor_analyzer = CompetitorAnalysisAgent(
-            AgentLLMClient("competitor_analysis")
-        )
-        self.visualizer = VisualizationAgent(
-            AgentLLMClient("visualization")
-        )
-        self.strategist = StrategyAgent(
-            AgentLLMClient("strategy")
-        )
-        self.reporter = ReportAgent(
-            AgentLLMClient("report")
-        )
+        # Use injected client for all agents when provided (enables test mocking)
+        # Fall back to agent-specific clients from config
+        if llm_client:
+            self.llm = llm_client
+            self.business_parser = BusinessParserAgent(llm_client)
+            self.research_planner = ResearchPlannerAgent(llm_client)
+            self.data_summarizer = DataSummaryAgent(llm_client)
+            self.competitor_analyzer = CompetitorAnalysisAgent(llm_client)
+            self.visualizer = VisualizationAgent(llm_client)
+            self.strategist = StrategyAgent(llm_client)
+            self.reporter = ReportAgent(llm_client)
+        else:
+            self.llm = AgentLLMClient("default")
+            self.business_parser = BusinessParserAgent(
+                AgentLLMClient("business_parser")
+            )
+            self.research_planner = ResearchPlannerAgent(
+                AgentLLMClient("research_planner")
+            )
+            self.data_summarizer = DataSummaryAgent(
+                AgentLLMClient("research_planner")
+            )
+            self.competitor_analyzer = CompetitorAnalysisAgent(
+                AgentLLMClient("competitor_analysis")
+            )
+            self.visualizer = VisualizationAgent(
+                AgentLLMClient("visualization")
+            )
+            self.strategist = StrategyAgent(
+                AgentLLMClient("strategy")
+            )
+            self.reporter = ReportAgent(
+                AgentLLMClient("report")
+            )
 
         # Scraper service
         self.scraper = get_scraper_provider()

@@ -187,8 +187,11 @@ Top Recommendations:
             start = text.index("```") + 3
             if text[start:start+4] == "json":
                 start += 4
-            end = text.index("```", start)
-            text = text[start:end].strip()
+            try:
+                end = text.index("```", start)
+                text = text[start:end].strip()
+            except ValueError:
+                text = text[start:].strip()
         if "{" in text:
             start = text.index("{")
             end = text.rindex("}") + 1
@@ -202,8 +205,11 @@ Top Recommendations:
             start = text.index("```") + 3
             if text[start:start+4] == "json":
                 start += 4
-            end = text.index("```", start)
-            text = text[start:end].strip()
+            try:
+                end = text.index("```", start)
+                text = text[start:end].strip()
+            except ValueError:
+                text = text[start:].strip()
         if "[" in text:
             start = text.index("[")
             end = text.rindex("]") + 1

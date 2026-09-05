@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.agents.base import BaseAgent
 from app.schemas.analysis import (
@@ -68,7 +68,7 @@ Do NOT invent information not present in the data."""
 
         # Build metadata
         metadata = Metadata(
-            generated_at=datetime.utcnow().isoformat(),
+            generated_at=datetime.now(timezone.utc).isoformat(),
             model_used="llm-brain",
             confidence=self._calculate_confidence(competitors, swot, recommendations),
             processing_time_ms=processing_time_ms,
