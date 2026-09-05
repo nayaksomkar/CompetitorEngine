@@ -12,29 +12,94 @@
         }
 
         :root {
-            --primary: #4F46E5;
-            --primary-dark: #4338CA;
-            --success: #10B981;
-            --warning: #F59E0B;
-            --danger: #EF4444;
-            --gray-50: #F9FAFB;
-            --gray-100: #F3F4F6;
-            --gray-200: #E5E7EB;
-            --gray-300: #D1D5DB;
-            --gray-500: #6B7280;
-            --gray-700: #374151;
-            --gray-900: #111827;
+            --primary: #6366F1;
+            --primary-dark: #4F46E5;
+            --primary-light: #818CF8;
+            --success: #34D399;
+            --warning: #FBBF24;
+            --danger: #F87171;
+            --bg-primary: #F9FAFB;
+            --bg-secondary: #FFFFFF;
+            --bg-tertiary: #F3F4F6;
+            --text-primary: #1F2937;
+            --text-secondary: #4B5563;
+            --text-muted: #9CA3AF;
+            --border: #E5E7EB;
+            --border-light: #F3F4F6;
+            --shadow: 0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -1px rgba(0,0,0,0.04);
+            --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -2px rgba(0,0,0,0.03);
             --radius: 12px;
-            --shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            --radius-sm: 8px;
+        }
+
+        [data-theme="dark"] {
+            --primary: #818CF8;
+            --primary-dark: #6366F1;
+            --primary-light: #A5B4FC;
+            --success: #6EE7B7;
+            --warning: #FCD34D;
+            --danger: #FCA5A5;
+            --bg-primary: #0F1117;
+            --bg-secondary: #1A1D27;
+            --bg-tertiary: #252833;
+            --text-primary: #E5E7EB;
+            --text-secondary: #9CA3AF;
+            --text-muted: #6B7280;
+            --border: #2D3140;
+            --border-light: #252833;
+            --shadow: 0 4px 6px -1px rgba(0,0,0,0.3), 0 2px 4px -1px rgba(0,0,0,0.2);
+            --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.4), 0 4px 6px -2px rgba(0,0,0,0.2);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--gray-50);
-            color: var(--gray-900);
+            background: var(--bg-primary);
+            color: var(--text-primary);
             line-height: 1.6;
             min-height: 100vh;
+            transition: background-color 0.3s ease, color 0.3s ease;
         }
+
+        /* Theme Toggle */
+        .theme-toggle {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 1000;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 50px;
+            padding: 0.5rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            box-shadow: var(--shadow);
+            transition: all 0.3s ease;
+        }
+
+        .theme-toggle:hover {
+            transform: scale(1.05);
+        }
+
+        .theme-toggle svg {
+            width: 20px;
+            height: 20px;
+            color: var(--text-secondary);
+            transition: color 0.3s ease;
+        }
+
+        .theme-toggle .sun-icon { display: none; }
+        .theme-toggle .moon-icon { display: block; }
+
+        [data-theme="dark"] .theme-toggle .sun-icon { display: block; }
+        [data-theme="dark"] .theme-toggle .moon-icon { display: none; }
 
         /* Header */
         .header {
@@ -42,6 +107,11 @@
             color: white;
             padding: 1.5rem;
             text-align: center;
+            position: relative;
+        }
+
+        [data-theme="dark"] .header {
+            background: linear-gradient(135deg, #312E81, #1E1B4B);
         }
 
         .header h1 {
@@ -64,17 +134,18 @@
 
         /* Form Section */
         .form-section {
-            background: white;
+            background: var(--bg-secondary);
             border-radius: var(--radius);
             padding: 1.5rem;
             margin-bottom: 1.5rem;
             box-shadow: var(--shadow);
+            border: 1px solid var(--border);
         }
 
         .form-section h2 {
             font-size: 1.25rem;
             margin-bottom: 1rem;
-            color: var(--gray-700);
+            color: var(--text-primary);
         }
 
         .form-grid {
@@ -91,7 +162,7 @@
         .form-group label {
             font-size: 0.875rem;
             font-weight: 500;
-            color: var(--gray-700);
+            color: var(--text-secondary);
             margin-bottom: 0.25rem;
         }
 
@@ -103,10 +174,17 @@
         .form-group textarea,
         .form-group select {
             padding: 0.75rem;
-            border: 1px solid var(--gray-300);
-            border-radius: 8px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
             font-size: 1rem;
+            background: var(--bg-primary);
+            color: var(--text-primary);
             transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .form-group input::placeholder,
+        .form-group textarea::placeholder {
+            color: var(--text-muted);
         }
 
         .form-group input:focus,
@@ -114,7 +192,13 @@
         .form-group select:focus {
             outline: none;
             border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+
+        [data-theme="dark"] .form-group input:focus,
+        [data-theme="dark"] .form-group textarea:focus,
+        [data-theme="dark"] .form-group select:focus {
+            box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.2);
         }
 
         .form-group textarea {
@@ -186,6 +270,7 @@
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            color: var(--text-primary);
         }
 
         /* Cards Grid */
@@ -197,15 +282,17 @@
         }
 
         .card {
-            background: white;
+            background: var(--bg-secondary);
             border-radius: var(--radius);
             padding: 1.25rem;
             box-shadow: var(--shadow);
-            transition: transform 0.2s;
+            transition: transform 0.2s, box-shadow 0.2s;
+            border: 1px solid var(--border);
         }
 
         .card:hover {
             transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
         }
 
         .card-header {
@@ -230,14 +317,20 @@
         .card-icon.yellow { background: #FFFBEB; color: var(--warning); }
         .card-icon.red { background: #FEF2F2; color: var(--danger); }
 
+        [data-theme="dark"] .card-icon.blue { background: #1E1B4B; color: var(--primary-light); }
+        [data-theme="dark"] .card-icon.green { background: #064E3B; color: var(--success); }
+        [data-theme="dark"] .card-icon.yellow { background: #78350F; color: var(--warning); }
+        [data-theme="dark"] .card-icon.red { background: #7F1D1D; color: var(--danger); }
+
         .card-title {
             font-weight: 600;
             font-size: 1rem;
+            color: var(--text-primary);
         }
 
         .card-subtitle {
             font-size: 0.8rem;
-            color: var(--gray-500);
+            color: var(--text-muted);
         }
 
         /* Competitor Cards */
@@ -252,9 +345,16 @@
         }
 
         .competitor-desc {
-            color: var(--gray-500);
+            color: var(--text-muted);
             font-size: 0.9rem;
             margin-bottom: 0.75rem;
+        }
+
+        .competitor-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
         }
 
         .tag-list {
@@ -274,6 +374,9 @@
         .tag.strength { background: #ECFDF5; color: #065F46; }
         .tag.weakness { background: #FEF2F2; color: #991B1B; }
 
+        [data-theme="dark"] .tag.strength { background: #064E3B; color: #6EE7B7; }
+        [data-theme="dark"] .tag.weakness { background: #7F1D1D; color: #FCA5A5; }
+
         /* SWOT Grid */
         .swot-grid {
             display: grid;
@@ -290,6 +393,11 @@
         .swot-item.weaknesses { background: #FEF2F2; }
         .swot-item.opportunities { background: #EEF2FF; }
         .swot-item.threats { background: #FFFBEB; }
+
+        [data-theme="dark"] .swot-item.strengths { background: #064E3B; }
+        [data-theme="dark"] .swot-item.weaknesses { background: #7F1D1D; }
+        [data-theme="dark"] .swot-item.opportunities { background: #1E1B4B; }
+        [data-theme="dark"] .swot-item.threats { background: #78350F; }
 
         .swot-item h4 {
             font-size: 0.9rem;
@@ -320,18 +428,23 @@
 
         .swot-item li .explanation {
             font-size: 0.8rem;
-            color: var(--gray-500);
+            color: var(--text-muted);
             margin-top: 0.25rem;
         }
 
+        [data-theme="dark"] .swot-item li { border-bottom-color: rgba(255,255,255,0.1); }
+        [data-theme="dark"] .swot-item li .point { color: var(--text-primary); }
+        [data-theme="dark"] .swot-item li .explanation { color: var(--text-muted); }
+
         /* Charts */
         .chart-container {
-            background: white;
+            background: var(--bg-secondary);
             border-radius: var(--radius);
             padding: 1.25rem;
             box-shadow: var(--shadow);
             margin-bottom: 1rem;
             overflow-x: auto;
+            border: 1px solid var(--border);
         }
 
         .chart-title {
@@ -644,12 +757,129 @@
             visibility: visible;
         }
 
+        /* Server Status Panel */
+        .server-status {
+            position: fixed;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-right: none;
+            border-radius: var(--radius) 0 0 var(--radius);
+            padding: 1rem 0.75rem;
+            box-shadow: var(--shadow-lg);
+            z-index: 999;
+            min-width: 140px;
+        }
+
+        .server-status h4 {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 0.75rem;
+            text-align: center;
+        }
+
+        .server-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 0;
+            font-size: 0.75rem;
+        }
+
+        .server-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            animation: pulse 2s infinite;
+        }
+
+        .server-dot.online {
+            background: #10B981;
+            box-shadow: 0 0 8px #10B981;
+        }
+
+        .server-dot.offline {
+            background: #EF4444;
+            animation: none;
+        }
+
+        .server-dot.pending {
+            background: #6B7280;
+            animation: none;
+        }
+
+        .server-name {
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Collapsed state */
+        .server-status.collapsed {
+            min-width: auto;
+            padding: 0.5rem;
+        }
+
+        .server-status.collapsed .server-name,
+        .server-status.collapsed h4 {
+            display: none;
+        }
+
+        .server-status-toggle {
+            position: absolute;
+            left: -20px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 20px;
+            height: 40px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-right: none;
+            border-radius: 8px 0 0 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+        }
+
+        .server-status-toggle svg {
+            width: 12px;
+            height: 12px;
+            transition: transform 0.3s;
+        }
+
+        .server-status.collapsed .server-status-toggle svg {
+            transform: rotate(180deg);
+        }
+
         /* Footer */
         .footer {
             text-align: center;
             padding: 1.5rem;
-            color: var(--gray-500);
+            color: var(--text-muted);
             font-size: 0.875rem;
+        }
+
+        .sample-disclaimer {
+            color: #EF4444;
+            font-weight: 500;
+            margin-top: 0.5rem;
+        }
+
+        [data-theme="dark"] .sample-disclaimer {
+            color: #FCA5A5;
         }
 
         /* ==================== */
@@ -748,6 +978,17 @@
     </style>
 </head>
 <body>
+    <!-- Theme Toggle -->
+    <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode">
+        <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="5"/>
+            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+        </svg>
+        <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+    </button>
+
     <header class="header">
         <h1>Competitive Analysis</h1>
         <p>AI-powered competitor insights for your business</p>
@@ -887,12 +1128,100 @@
         </section>
     </main>
 
+    <!-- Server Status Panel -->
+    <div class="server-status" id="serverStatus">
+        <div class="server-status-toggle" id="serverToggle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 18l6-6-6-6"/>
+            </svg>
+        </div>
+        <h4>Servers</h4>
+        <div class="server-item">
+            <span class="server-dot online" id="server-orchestrator-dot"></span>
+            <span class="server-name">Competitor Engine</span>
+        </div>
+        <div class="server-item">
+            <span class="server-dot online" id="server-llmping-dot"></span>
+            <span class="server-name">LLM Brain</span>
+        </div>
+        <div class="server-item">
+            <span class="server-dot pending" id="server-webhunter-dot"></span>
+            <span class="server-name">WebHunter</span>
+        </div>
+    </div>
+
     <footer class="footer">
         <p>Powered by Competitive Analysis Orchestrator</p>
+        <p class="sample-disclaimer">This is sample data with predefined examples for demonstration purposes</p>
     </footer>
 
     <script>
-        const API_URL = 'http://localhost:8001/api/v1/analyze';
+        const API_URL = 'https://competitorengine.onrender.com/api/v1/analyze';
+
+        // Server URLs for status check
+        const SERVERS = {
+            orchestrator: 'https://competitorengine.onrender.com',
+            llmping: 'https://llmping.onrender.com',
+            webhunter: null // Coming soon
+        };
+
+        // Theme Toggle
+        const themeToggle = document.getElementById('themeToggle');
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+
+        themeToggle.addEventListener('click', () => {
+            const currentTheme = document.documentElement.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+        });
+
+        // Server Status Panel Toggle
+        const serverToggle = document.getElementById('serverToggle');
+        const serverStatus = document.getElementById('serverStatus');
+
+        serverToggle.addEventListener('click', () => {
+            serverStatus.classList.toggle('collapsed');
+        });
+
+        // Check server status
+        async function checkServerStatus(url) {
+            if (!url) return 'pending';
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000);
+                const response = await fetch(url, {
+                    method: 'HEAD',
+                    mode: 'no-cors',
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                return 'online';
+            } catch (error) {
+                return 'offline';
+            }
+        }
+
+        async function updateServerStatus() {
+            // Check Orchestrator
+            const orchestratorStatus = await checkServerStatus(SERVERS.orchestrator);
+            const orchestratorDot = document.getElementById('server-orchestrator-dot');
+            orchestratorDot.className = `server-dot ${orchestratorStatus}`;
+
+            // Check LLM Ping
+            const llmpingStatus = await checkServerStatus(SERVORS.llmping);
+            const llmpingDot = document.getElementById('server-llmping-dot');
+            llmpingDot.className = `server-dot ${llmpingStatus}`;
+
+            // WebHunter - pending (coming soon)
+            const webhunterDot = document.getElementById('server-webhunter-dot');
+            webhunterDot.className = 'server-dot pending';
+        }
+
+        // Check servers on load and every 30 seconds
+        updateServerStatus();
+        setInterval(updateServerStatus, 30000);
 
         // Form submission
         document.getElementById('analysisForm').addEventListener('submit', async (e) => {
