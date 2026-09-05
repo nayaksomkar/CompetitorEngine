@@ -25,3 +25,5 @@
 - Each backend microservice README must include a clear "API Contract" section with exact request/response JSON schemas so the UI team knows exactly what to send and render. Confidence: 0.95
 - Backend services should document UI integration instructions (how to render charts, tables, cards, handle "Explain This" tooltips with explanation fields). Confidence: 0.9
 - Wants taste/preference learnings recorded at the global root level (`taste.md`), not in project-specific subdirectories, so preferences apply across all projects. Confidence: 0.9
+- Prefers hardcoded single-file HTML UIs (inline CSS/JS, no build steps, no frameworks) over separate frontend frameworks for simple interfaces. Confidence: 0.7
+- Uses CSS-only responsive design with media queries (no external UI libraries) for multi-screen compatibility. Confidence: 0.7
