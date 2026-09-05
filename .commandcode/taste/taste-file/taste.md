@@ -1,0 +1,26 @@
+# Taste File
+- Prefers Python with FastAPI for building microservices. Confidence: 0.95
+- Uses Pydantic v2 for data validation at every boundary. Confidence: 0.95
+- Favors async/await patterns throughout (async HTTP clients, async endpoints). Confidence: 0.9
+- Organizes code into clear modular layers: schemas, agents/services, routers, orchestrator. Confidence: 0.9
+- Uses logical agent classes (not separate services) for workflow steps within a single microservice. Confidence: 0.85
+- Prefers lightweight services: no database, Redis, or authentication unless explicitly needed. Confidence: 0.9
+- Designs swappable provider interfaces (e.g., abstract base class + mock + HTTP implementations) for external service integration. Confidence: 0.9
+- Communicates with LLM services via HTTP using simple JSON payloads like `{"query": "..."}`. Confidence: 0.85
+- Uses versioned REST API endpoints (e.g., `/api/v1/analyze`). Confidence: 0.85
+- Returns structured frontend-ready JSON outputs with explanation fields for "Explain This" functionality. Confidence: 0.9
+- Includes source/evidence references and confidence scores in response metadata. Confidence: 0.85
+- Expects retries with exponential backoff and configurable timeouts for external HTTP calls. Confidence: 0.9
+- Uses pydantic-settings for environment variable configuration with `.env.example` files. Confidence: 0.9
+- Prefers structlog for structured logging. Confidence: 0.8
+- Includes health check endpoints (`/health`) in services. Confidence: 0.85
+- Writes pytest tests with mocking (AsyncMock) for unit and integration tests. Confidence: 0.85
+- Provides sample JSON data files for API documentation, test fixtures, and GitHub reference. Confidence: 0.8
+- Includes comprehensive README with architecture diagrams, quick start, API docs, and configuration tables. Confidence: 0.85
+- Uses Docker with healthcheck instructions for containerization. Confidence: 0.85
+- Provides highly detailed, structured requirements upfront covering architecture, components, data flow, and tech stack. Confidence: 0.9
+- Expects a plan/review step before large implementations. Confidence: 0.8
+- Wants CORS middleware configured for frontend access (typically localhost:3000, localhost:5173). Confidence: 0.75
+- Prefers flat repository structure: when a repo IS a single microservice, code lives at the root, not nested inside a subfolder like `microservice1/`. Confidence: 0.8
+- Each backend microservice README must include a clear "API Contract" section with exact request/response JSON schemas so the UI team knows exactly what to send and render. Confidence: 0.95
+- Backend services should document UI integration instructions (how to render charts, tables, cards, handle "Explain This" tooltips with explanation fields). Confidence: 0.9

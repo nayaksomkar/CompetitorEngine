@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(source:*)",
+      "Shell(pip:*)",
+      "Shell(python --version)",
+      "Shell(/home/nsm/Documents/githubREPO/CompetitorEngine/.venv/bin/python:*)",
+      "Shell(.venv/bin/python:*)",
+      "Shell(uv:*)",
+      "Shell(../.venv/bin/python:*)",
+      "Shell(docker:*)",
+      "Shell(sleep:*)",
+      "Shell(curl -s http://localhost:8001/health)",
+      "Shell(python3 -m json.tool)",
+      "Shell(curl -s -X POST http://localhost:8001/api/v1/analyze  -H Content-Type: application/json  -d @samples/sample_form_input.json)",
+      "Shell(python3 -c  import json, sys data = json.load(sys.stdin) print('=== Analysis Result Summary ===') print(f'Business: {data.get(\"profile\", {}).get(\"business_name\", \"N/A\")}') print(f'Summary: {data.get(\"business_summary\", \"\")[:100]}...') print(f'Competitors: {len(data.get(\"competitors\", []))}') print(f'SWOT items: {sum(len(v) for v in data.get(\"swot\", {}).values() if isinstance(v, list))}') print(f'Recommendations: {len(data.get(\"recommendations\", []))}') print(f'Action items: {len(data.get(\"action_plan\", []))}') print(f'Charts: {len(data.get(\"charts\", []))}') print(f'Insights: {len(data.get(\"insights\", []))}') print(f'Sources: {len(data.get(\"sources\", []))}') print(f'Confidence: {data.get(\"metadata\", {}).get(\"confidence\", 0)}') print() print('Report preview:') print(data.get('report', '')[:300] + '...') )",
+      "Shell(curl -s -X POST http://localhost:8001/api/v1/analyze  -H Content-Type: application/json  -d @/home/nsm/Documents/githubREPO/CompetitorEngine/microservice1/samples/sample_form_input.json)",
+      "Shell(curl -s -X POST http://localhost:8001/api/v1/analyze \\ -H \"Content-Type: application/json\" \\ -d @/home/nsm/Documents/githubREPO/CompetitorEngine/microservice1/samples/sample_form_input.json)",
+      "Shell(cd /home/nsm/Documents/githubREPO/CompetitorEngine && mv microservice1/* . && mv microservice1/.* . 2>/dev/null; rmdir microservice1 && ls -la)",
+      "Shell(rm:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

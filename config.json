@@ -1,0 +1,16 @@
+{
+  "defaultProvider": "google_genai",
+  "defaultModel": "gemini-2.5-flash",
+  "providerModels": [
+    ["google_genai", "gemini-2.5-flash"],
+    ["mistral", "mistral-small-latest"],
+    ["groq", "openai/gpt-oss-20b"],
+    ["cerebras", "gpt-oss-120b"],
+    ["nvidia", "openai/gpt-oss-20b"]
+  ],
+  "contextProvider": "groq",
+  "contextModel": "openai/gpt-oss-20b",
+  "sessionTTL": 1800,
+  "sessionMaxHistory": 5,
+  "providerTimeout": 30
+}
