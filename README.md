@@ -1,19 +1,59 @@
 # Competitive Analysis Orchestrator
 
-This is the main backend service for the competitive analysis platform. It takes business information from the frontend, runs analysis using AI, and returns structured results.
+This is the orchestrator service that forwards requests to the **LLM Ping** service. It takes business information from the frontend, sends it to LLM Ping for AI analysis, and returns structured results.
+
+---
+
+## Architecture
+
+```
+Frontend → Orchestrator (this service) → LLM Ping → AI Analysis → Response
+```
+
+The orchestrator acts as a middleware that:
+1. Receives business data from frontend
+2. Forwards it to LLM Ping service
+3. Structures the AI response into charts, tables, recommendations
 
 ---
 
 ## How It Works
 
 1. User fills a form in the frontend with their business details
-2. Frontend sends the data to this service
-3. Service analyzes competitors, pricing, market gaps using AI
+2. Frontend sends the data to this orchestrator service
+3. Orchestrator forwards to LLM Ping service for AI analysis
 4. Service returns structured results (charts, tables, recommendations)
 
 ---
 
-## API Endpoints
+## LLM Ping Service (AI Backend)
+
+This is the actual AI service that processes requests.
+
+**Endpoint:** `POST http://localhost:8000/chat`
+
+**Headers:**
+```
+Content-Type: application/json
+```
+
+**Request Format:**
+```json
+{
+  "query": "What is Python?"
+}
+```
+
+**Example curl:**
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is Python?"}'
+```
+
+---
+
+## Orchestrator API Endpoints
 
 ### Health Check
 ```
@@ -42,52 +82,11 @@ Every item includes an `explanation` field — use this for "Explain This" toolt
 
 ---
 
-## Run Locally
-
-```bash
-# Setup
-uv venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
-
-# Run
-uvicorn app.main:app --reload --port 8001
-```
-
----
-
-## Run with Docker
-
-```bash
-docker build -t competitor-orchestrator .
-docker run -d -p 8001:8001 --env-file .env competitor-orchestrator
-```
-
----
-
-## Environment Variables
-
-Create a `.env` file:
-```
-SERVICE_PORT=8001
-```
-
----
-
-## CORS (Frontend Access)
-
-Allowed origins:
-- `http://localhost:5173`
-
-To add more, edit `app/main.py` → `allow_origins` list.
-
----
-
 ## For UI Team
 
 ### How to Send Requests
 
-**Base URL:** `http://localhost:8001` (local) or your deployed URL
+**Base URL:** `http://localhost:8001` (orchestrator) or your deployed URL
 
 **Endpoint:** `POST /api/v1/analyze`
 
@@ -99,15 +98,15 @@ Content-Type: application/json
 **Request Body:**
 ```json
 {
-  "business_name": "MyStartup",        // REQUIRED
-  "idea": "AI project management tool", // REQUIRED
-  "industry": "SaaS",                   // REQUIRED
+  "business_name": "MyStartup",
+  "idea": "AI project management tool",
+  "industry": "SaaS",
   "products_services": ["Dashboard", "API"],
   "target_customers": "SMBs",
   "geography": "US",
   "pricing": "$49/month",
   "business_model": "Subscription",
-  "competitors": ["CompA", "CompB"],
+  "competitors": ["Asana", "Monday.com"],
   "differentiators": "AI-first approach",
   "research_goals": ["competitor_research", "pricing_research"],
   "user_query": "How to compete?"
@@ -149,7 +148,7 @@ curl -X POST http://localhost:8001/api/v1/analyze \
 ```json
 {
   "business_summary": "Brief summary of the business",
-  "profile": { /* parsed business data */ },
+  "profile": { "business_name": "MyStartup", "idea": "..." },
   "competitors": [
     {
       "name": "CompA",
@@ -238,6 +237,47 @@ The `charts` array contains:
 - `datasets`: Data values
 
 Use with Chart.js or Recharts.
+
+---
+
+## Run Locally
+
+```bash
+# Setup
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+
+# Run
+uvicorn app.main:app --reload --port 8001
+```
+
+---
+
+## Run with Docker
+
+```bash
+docker build -t competitor-orchestrator .
+docker run -d -p 8001:8001 --env-file .env competitor-orchestrator
+```
+
+---
+
+## Environment Variables
+
+Create a `.env` file:
+```
+SERVICE_PORT=8001
+```
+
+---
+
+## CORS (Frontend Access)
+
+Allowed origins:
+- `http://localhost:5173`
+
+To add more, edit `app/main.py` → `allow_origins` list.
 
 ---
 
