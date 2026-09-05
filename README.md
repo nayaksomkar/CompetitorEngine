@@ -25,24 +25,6 @@ GET /health
 POST /api/v1/analyze
 ```
 
-**Send this JSON:**
-```json
-{
-  "business_name": "Your Company",
-  "idea": "What your business does",
-  "industry": "Your industry",
-  "products_services": ["Product 1", "Product 2"],
-  "target_customers": "Who you serve",
-  "geography": "Where you operate",
-  "pricing": "Your pricing",
-  "business_model": "How you make money",
-  "competitors": ["Competitor 1", "Competitor 2"],
-  "differentiators": "What makes you different",
-  "research_goals": ["competitor_pricing", "market_gaps"],
-  "user_query": "Any specific question?"
-}
-```
-
 **Required fields:** `business_name`, `idea`, `industry` (rest are optional)
 
 **You get back:**
@@ -106,7 +88,7 @@ To add more, edit `app/main.py` → `allow_origins` list.
 ## For UI Team
 
 ### How to Connect
-1. Send `POST` request to `/api/v1/analyze` with the JSON shown above
+1. Send `POST` request to `/api/v1/analyze` with business data
 2. Display the response using the field names provided
 3. Use `explanation` fields for tooltips
 4. Show `sources` as clickable links
