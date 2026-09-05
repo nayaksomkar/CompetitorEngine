@@ -12,7 +12,7 @@ from app.agents.visualization_agent import VisualizationAgent
 from app.schemas.analysis import Insight
 from app.schemas.business import FormInput
 from app.schemas.output import AnalysisResult
-from app.services.llm_client import LLMClient
+from app.services.llm_client import AgentLLMClient
 from app.services.scraper_client import get_scraper_provider
 
 logger = structlog.get_logger(__name__)
@@ -22,23 +22,38 @@ class Orchestrator:
     """
     Central coordinator for the competitive analysis workflow.
     Manages agent execution and data flow through the pipeline.
+    Each agent gets its own LLM client with provider configured from config.json.
     """
 
     def __init__(
         self,
-        llm_client: LLMClient | None = None,
+        llm_client: AgentLLMClient | None = None,
     ):
-        self.llm = llm_client or LLMClient()
-        self.scraper = get_scraper_provider()
+        # Create agent-specific LLM clients with their configured providers
+        self.business_parser = BusinessParserAgent(
+            AgentLLMClient("business_parser")
+        )
+        self.research_planner = ResearchPlannerAgent(
+            AgentLLMClient("research_planner")
+        )
+        self.data_summarizer = DataSummaryAgent(
+            AgentLLMClient("research_planner")
+        )
+        self.competitor_analyzer = CompetitorAnalysisAgent(
+            AgentLLMClient("competitor_analysis")
+        )
+        self.visualizer = VisualizationAgent(
+            AgentLLMClient("visualization")
+        )
+        self.strategist = StrategyAgent(
+            AgentLLMClient("strategy")
+        )
+        self.reporter = ReportAgent(
+            AgentLLMClient("report")
+        )
 
-        # Initialize agents
-        self.business_parser = BusinessParserAgent(self.llm)
-        self.research_planner = ResearchPlannerAgent(self.llm)
-        self.data_summarizer = DataSummaryAgent(self.llm)
-        self.competitor_analyzer = CompetitorAnalysisAgent(self.llm)
-        self.visualizer = VisualizationAgent(self.llm)
-        self.strategist = StrategyAgent(self.llm)
-        self.reporter = ReportAgent(self.llm)
+        # Scraper service
+        self.scraper = get_scraper_provider()
 
     async def run_analysis(self, form_input: FormInput) -> AnalysisResult:
         """

@@ -36,13 +36,10 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS middleware
+# CORS middleware - origins from config.json
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://nayaksomkar.github.io",
-        "http://localhost:5173",
-    ],
+    allow_origins=settings.cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -83,10 +80,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 if __name__ == "__main__":
     import uvicorn
 
+    service_config = settings.get_service_config()
+
     uvicorn.run(
         "app.main:app",
-        host=settings.service_host,
-        port=settings.service_port,
+        host=service_config.get("host", settings.service_host),
+        port=service_config.get("port", settings.service_port),
         reload=True,
-        log_level=settings.log_level.lower(),
+        log_level=service_config.get("log_level", settings.log_level).lower(),
     )

@@ -1,19 +1,23 @@
 # Competitive Analysis Orchestrator
 
-This is the orchestrator service that forwards requests to the **LLM Ping** service. It takes business information from the frontend, sends it to LLM Ping for AI analysis, and returns structured results.
+This is the orchestrator service that forwards requests to **LLM providers** for AI analysis. It takes business information from the frontend, distributes work across multiple AI agents (each with its own provider), and returns structured results.
 
 ---
 
 ## Architecture
 
 ```
-Frontend → Orchestrator (this service) → LLM Ping → AI Analysis → Response
+Frontend → Orchestrator (this service) → LLM Providers (with fallback chain)
+                                        ↓
+                              ┌─────────────────────┐
+                              │  Business Parser    │ → google_genai (fallback: mistral)
+                              │  Research Planner   │ → google_genai (fallback: groq)
+                              │  Competitor Analysis│ → mistral (fallback: google_genai)
+                              │  Strategy Agent     │ → groq (fallback: cerebras)
+                              │  Visualization      │ → google_genai (fallback: mistral)
+                              │  Report Agent       │ → cerebras (fallback: groq)
+                              └─────────────────────┘
 ```
-
-The orchestrator acts as a middleware that:
-1. Receives business data from frontend
-2. Forwards it to LLM Ping service
-3. Structures the AI response into charts, tables, recommendations
 
 ---
 
@@ -21,30 +25,80 @@ The orchestrator acts as a middleware that:
 
 1. User fills a form in the frontend with their business details
 2. Frontend sends the data to this orchestrator service
-3. Orchestrator forwards to LLM Ping service for AI analysis
-4. Service returns structured results (charts, tables, recommendations)
+3. Orchestrator distributes work to agents, each using its configured LLM provider
+4. If a provider fails, automatic fallback to the next provider in the chain
+5. Service returns structured results (charts, tables, recommendations)
 
 ---
 
-## LLM Ping Service (AI Backend)
+## Configuration (config.json)
 
-This is the actual AI service that processes requests.
+All providers, models, and fallbacks are configured in `config.json`:
 
-**Endpoint:** `POST http://localhost:8000/chat`
-
-**Headers:**
-```
-Content-Type: application/json
-```
-
-**Request Format:**
 ```json
 {
-  "query": "What is Python?"
+  "llm": {
+    "providers": [
+      {
+        "name": "google_genai",
+        "url": "http://localhost:8000/chat",
+        "model": "gemini-2.5-flash",
+        "timeout": 30,
+        "max_retries": 2,
+        "enabled": true
+      }
+    ],
+    "fallback_chain": ["google_genai", "mistral", "groq", "cerebras"],
+    "default_provider": "google_genai"
+  },
+  "agents": {
+    "business_parser": {
+      "provider": "google_genai",
+      "model": "gemini-2.5-flash",
+      "fallback": "mistral"
+    }
+  }
 }
 ```
 
-**Example curl:**
+### Provider Configuration
+
+| Field | Description |
+|-------|-------------|
+| `name` | Provider identifier |
+| `url` | LLM endpoint URL (accepts `{"query": "..."}` format) |
+| `model` | Model name to use |
+| `timeout` | Request timeout in seconds |
+| `max_retries` | Retries before fallback |
+| `enabled` | Whether provider is active |
+
+### Agent Configuration
+
+Each agent has its own provider and fallback:
+
+| Agent | Default Provider | Fallback |
+|-------|-----------------|----------|
+| `business_parser` | google_genai | mistral |
+| `research_planner` | google_genai | groq |
+| `competitor_analysis` | mistral | google_genai |
+| `strategy` | groq | cerebras |
+| `visualization` | google_genai | mistral |
+| `report` | cerebras | groq |
+
+### Fallback Chain
+
+When a provider fails, the system automatically tries the next provider:
+1. Try agent's primary provider
+2. Try agent's specific fallback
+3. Try global fallback chain
+4. Return error if all fail
+
+---
+
+## LLM Provider API Format
+
+All providers accept requests in this format:
+
 ```bash
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
@@ -274,10 +328,11 @@ SERVICE_PORT=8001
 
 ## CORS (Frontend Access)
 
-Allowed origins:
+Allowed origins (configured in config.json):
 - `http://localhost:5173`
+- `http://localhost:3000`
 
-To add more, edit `app/main.py` → `allow_origins` list.
+To add more, edit `config.json` → `cors.allowed_origins`.
 
 ---
 

@@ -1,6 +1,6 @@
 import structlog
 
-from app.services.llm_client import LLMClient
+from app.services.llm_client import AgentLLMClient
 
 logger = structlog.get_logger(__name__)
 
@@ -13,11 +13,11 @@ class AgentError(Exception):
 class BaseAgent:
     """
     Base class for all logical agents.
-    Provides LLM client access and common utilities.
+    Provides LLM client access with agent-specific provider configuration.
     """
 
-    def __init__(self, llm_client: LLMClient | None = None):
-        self.llm = llm_client or LLMClient()
+    def __init__(self, llm_client: AgentLLMClient | None = None):
+        self.llm = llm_client or AgentLLMClient(agent_name=self.__class__.__name__)
         self.logger = logger.bind(agent=self.__class__.__name__)
 
     async def _query_llm(self, prompt: str) -> str:
