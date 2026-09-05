@@ -1,0 +1,1166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Competitive Analysis</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #4F46E5;
+            --primary-dark: #4338CA;
+            --success: #10B981;
+            --warning: #F59E0B;
+            --danger: #EF4444;
+            --gray-50: #F9FAFB;
+            --gray-100: #F3F4F6;
+            --gray-200: #E5E7EB;
+            --gray-300: #D1D5DB;
+            --gray-500: #6B7280;
+            --gray-700: #374151;
+            --gray-900: #111827;
+            --radius: 12px;
+            --shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--gray-50);
+            color: var(--gray-900);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+            padding: 1.5rem;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 0.9rem;
+            margin-top: 0.25rem;
+        }
+
+        /* Container */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+
+        /* Form Section */
+        .form-section {
+            background: white;
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: var(--shadow);
+        }
+
+        .form-section h2 {
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+            color: var(--gray-700);
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .form-group label {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--gray-700);
+            margin-bottom: 0.25rem;
+        }
+
+        .form-group label .required {
+            color: var(--danger);
+        }
+
+        .form-group input,
+        .form-group textarea,
+        .form-group select {
+            padding: 0.75rem;
+            border: 1px solid var(--gray-300);
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .btn {
+            padding: 0.875rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+            width: 100%;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: var(--gray-200);
+            color: var(--gray-700);
+        }
+
+        .btn-secondary:hover {
+            background: var(--gray-300);
+        }
+
+        /* Results Section */
+        .results-section {
+            display: none;
+        }
+
+        .results-section.active {
+            display: block;
+        }
+
+        .section-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Cards Grid */
+        .cards-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card {
+            background: white;
+            border-radius: var(--radius);
+            padding: 1.25rem;
+            box-shadow: var(--shadow);
+            transition: transform 0.2s;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .card-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        .card-icon.blue { background: #EEF2FF; color: var(--primary); }
+        .card-icon.green { background: #ECFDF5; color: var(--success); }
+        .card-icon.yellow { background: #FFFBEB; color: var(--warning); }
+        .card-icon.red { background: #FEF2F2; color: var(--danger); }
+
+        .card-title {
+            font-weight: 600;
+            font-size: 1rem;
+        }
+
+        .card-subtitle {
+            font-size: 0.8rem;
+            color: var(--gray-500);
+        }
+
+        /* Competitor Cards */
+        .competitor-card {
+            border-left: 4px solid var(--primary);
+        }
+
+        .competitor-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .competitor-desc {
+            color: var(--gray-500);
+            font-size: 0.9rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .tag-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .tag {
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .tag.strength { background: #ECFDF5; color: #065F46; }
+        .tag.weakness { background: #FEF2F2; color: #991B1B; }
+
+        /* SWOT Grid */
+        .swot-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+
+        .swot-item {
+            padding: 1rem;
+            border-radius: 8px;
+        }
+
+        .swot-item.strengths { background: #ECFDF5; }
+        .swot-item.weaknesses { background: #FEF2F2; }
+        .swot-item.opportunities { background: #EEF2FF; }
+        .swot-item.threats { background: #FFFBEB; }
+
+        .swot-item h4 {
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .swot-item ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .swot-item li {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            font-size: 0.9rem;
+        }
+
+        .swot-item li:last-child {
+            border-bottom: none;
+        }
+
+        .swot-item li .point {
+            font-weight: 500;
+        }
+
+        .swot-item li .explanation {
+            font-size: 0.8rem;
+            color: var(--gray-500);
+            margin-top: 0.25rem;
+        }
+
+        /* Charts */
+        .chart-container {
+            background: white;
+            border-radius: var(--radius);
+            padding: 1.25rem;
+            box-shadow: var(--shadow);
+            margin-bottom: 1rem;
+            overflow-x: auto;
+        }
+
+        .chart-title {
+            font-weight: 600;
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+
+        .chart-canvas {
+            width: 100%;
+            min-height: 250px;
+            position: relative;
+        }
+
+        /* Bar Chart CSS */
+        .bar-chart {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-around;
+            height: 200px;
+            padding: 1rem 0;
+            border-bottom: 2px solid var(--gray-200);
+        }
+
+        .bar-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            flex: 1;
+            max-width: 80px;
+        }
+
+        .bar {
+            width: 40px;
+            background: linear-gradient(180deg, var(--primary), var(--primary-dark));
+            border-radius: 4px 4px 0 0;
+            transition: height 0.5s ease;
+            min-height: 4px;
+        }
+
+        .bar-label {
+            font-size: 0.7rem;
+            color: var(--gray-500);
+            margin-top: 0.5rem;
+            text-align: center;
+            word-break: break-word;
+        }
+
+        .bar-value {
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        /* Pie Chart CSS */
+        .pie-chart-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .pie-chart {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            position: relative;
+        }
+
+        .pie-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            justify-content: center;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            font-size: 0.8rem;
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+        }
+
+        /* Comparison Table */
+        .table-container {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+            min-width: 400px;
+        }
+
+        .comparison-table th,
+        .comparison-table td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .comparison-table th {
+            background: var(--gray-50);
+            font-weight: 600;
+            color: var(--gray-700);
+        }
+
+        .comparison-table tr:hover {
+            background: var(--gray-50);
+        }
+
+        /* Insights */
+        .insight-card {
+            border-left: 4px solid var(--primary);
+        }
+
+        .insight-card.high { border-left-color: var(--danger); }
+        .insight-card.medium { border-left-color: var(--warning); }
+        .insight-card.low { border-left-color: var(--success); }
+
+        .insight-title {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .insight-desc {
+            font-size: 0.9rem;
+            color: var(--gray-500);
+        }
+
+        .insight-meta {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+            font-size: 0.75rem;
+        }
+
+        .badge {
+            padding: 0.125rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+
+        .badge-high { background: #FEF2F2; color: #991B1B; }
+        .badge-medium { background: #FFFBEB; color: #92400E; }
+        .badge-low { background: #ECFDF5; color: #065F46; }
+
+        /* Recommendations */
+        .recommendation-card {
+            border-left: 4px solid var(--success);
+        }
+
+        .recommendation-card h4 {
+            margin-bottom: 0.5rem;
+        }
+
+        .recommendation-card .priority {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        /* Action Plan */
+        .action-item {
+            display: flex;
+            gap: 1rem;
+            padding: 1rem 0;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .action-item:last-child {
+            border-bottom: none;
+        }
+
+        .action-number {
+            width: 32px;
+            height: 32px;
+            background: var(--primary);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }
+
+        .action-content h4 {
+            margin-bottom: 0.25rem;
+        }
+
+        .action-meta {
+            display: flex;
+            gap: 1rem;
+            font-size: 0.8rem;
+            color: var(--gray-500);
+            margin-top: 0.5rem;
+        }
+
+        /* Report */
+        .report-content {
+            background: white;
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            box-shadow: var(--shadow);
+            line-height: 1.8;
+        }
+
+        .report-content h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+        .report-content h2 { font-size: 1.25rem; margin: 1.5rem 0 0.75rem; }
+        .report-content h3 { font-size: 1.1rem; margin: 1rem 0 0.5rem; }
+        .report-content p { margin-bottom: 0.75rem; }
+        .report-content ul { margin-left: 1.5rem; margin-bottom: 0.75rem; }
+
+        /* Loading */
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid var(--gray-200);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Error */
+        .error-message {
+            background: #FEF2F2;
+            color: #991B1B;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .error-message.active {
+            display: block;
+        }
+
+        /* Sources */
+        .sources-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .source-link {
+            padding: 0.5rem 0.75rem;
+            background: var(--gray-100);
+            border-radius: 6px;
+            font-size: 0.8rem;
+            color: var(--primary);
+            text-decoration: none;
+            transition: background 0.2s;
+        }
+
+        .source-link:hover {
+            background: var(--gray-200);
+        }
+
+        /* Tooltip */
+        .tooltip {
+            position: relative;
+            cursor: help;
+        }
+
+        .tooltip::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--gray-900);
+            color: white;
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            white-space: nowrap;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.2s;
+            z-index: 100;
+        }
+
+        .tooltip:hover::after {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 1.5rem;
+            color: var(--gray-500);
+            font-size: 0.875rem;
+        }
+
+        /* ==================== */
+        /* RESPONSIVE BREAKPOINTS */
+        /* ==================== */
+
+        /* Small phones (320px+) */
+        @media (max-width: 480px) {
+            .header h1 { font-size: 1.25rem; }
+            .header p { font-size: 0.8rem; }
+            .container { padding: 0.75rem; }
+            .form-section { padding: 1rem; }
+            .form-row { grid-template-columns: 1fr; }
+            .card { padding: 1rem; }
+            .bar { width: 30px; }
+            .bar-chart { height: 150px; }
+            .swot-grid { grid-template-columns: 1fr; }
+            .comparison-table { font-size: 0.8rem; }
+            .comparison-table th, .comparison-table td { padding: 0.5rem; }
+        }
+
+        /* Tablets (481px - 768px) */
+        @media (min-width: 481px) {
+            .form-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .cards-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .swot-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        /* Small laptops (769px - 1024px) */
+        @media (min-width: 769px) {
+            .header { padding: 2rem; }
+            .header h1 { font-size: 2rem; }
+            .container { padding: 1.5rem; }
+
+            .form-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+
+            .cards-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+
+            .swot-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .bar-chart { height: 250px; }
+            .bar { width: 50px; }
+        }
+
+        /* Desktop (1025px - 1440px) */
+        @media (min-width: 1025px) {
+            .form-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
+
+            .cards-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
+
+            .swot-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
+
+            .chart-container {
+                padding: 1.5rem;
+            }
+        }
+
+        /* Large screens (1441px+) */
+        @media (min-width: 1441px) {
+            .container {
+                max-width: 1400px;
+                padding: 2rem;
+            }
+
+            .cards-grid {
+                grid-template-columns: repeat(5, 1fr);
+            }
+        }
+
+        /* Print styles */
+        @media print {
+            .form-section, .btn, .header { display: none; }
+            .results-section { display: block !important; }
+            .card { break-inside: avoid; box-shadow: none; border: 1px solid var(--gray-200); }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>Competitive Analysis</h1>
+        <p>AI-powered competitor insights for your business</p>
+    </header>
+
+    <main class="container">
+        <!-- Form Section -->
+        <section class="form-section">
+            <h2>Business Information</h2>
+            <form id="analysisForm">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Business Name <span class="required">*</span></label>
+                        <input type="text" name="business_name" required placeholder="MyStartup">
+                    </div>
+                    <div class="form-group">
+                        <label>Idea <span class="required">*</span></label>
+                        <input type="text" name="idea" required placeholder="AI project management tool">
+                    </div>
+                    <div class="form-group">
+                        <label>Industry <span class="required">*</span></label>
+                        <input type="text" name="industry" required placeholder="SaaS">
+                    </div>
+                    <div class="form-group">
+                        <label>Target Customers</label>
+                        <input type="text" name="target_customers" placeholder="SMBs, Enterprise">
+                    </div>
+                    <div class="form-group">
+                        <label>Geography</label>
+                        <input type="text" name="geography" placeholder="US, Global">
+                    </div>
+                    <div class="form-group">
+                        <label>Pricing</label>
+                        <input type="text" name="pricing" placeholder="$49/month">
+                    </div>
+                    <div class="form-group">
+                        <label>Business Model</label>
+                        <input type="text" name="business_model" placeholder="Subscription">
+                    </div>
+                    <div class="form-group">
+                        <label>Differentiators</label>
+                        <input type="text" name="differentiators" placeholder="AI-first approach">
+                    </div>
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label>Competitors (comma-separated)</label>
+                        <input type="text" name="competitors" placeholder="CompA, CompB, CompC">
+                    </div>
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label>Research Goals (comma-separated)</label>
+                        <input type="text" name="research_goals" placeholder="competitor_research, pricing_research">
+                    </div>
+                    <div class="form-group" style="grid-column: span 4;">
+                        <label>Products/Services (comma-separated)</label>
+                        <input type="text" name="products_services" placeholder="Dashboard, API, Mobile App">
+                    </div>
+                    <div class="form-group" style="grid-column: span 4;">
+                        <label>Your Question</label>
+                        <textarea name="user_query" placeholder="How should I position against competitors?"></textarea>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary" style="margin-top: 1rem;">
+                    Analyze Competitors
+                </button>
+            </form>
+        </section>
+
+        <!-- Loading -->
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Analyzing your competitive landscape...</p>
+        </div>
+
+        <!-- Error -->
+        <div class="error-message" id="errorMessage"></div>
+
+        <!-- Results Section -->
+        <section class="results-section" id="results">
+            <!-- Business Summary -->
+            <div class="card" style="margin-bottom: 1.5rem;">
+                <h3 class="section-title">Business Summary</h3>
+                <p id="businessSummary"></p>
+            </div>
+
+            <!-- Charts -->
+            <div id="chartsSection" style="display:none;">
+                <h3 class="section-title">Visualizations</h3>
+                <div id="chartsContainer"></div>
+            </div>
+
+            <!-- Competitors -->
+            <div id="competitorsSection" style="display:none;">
+                <h3 class="section-title">Competitors</h3>
+                <div class="cards-grid" id="competitorsContainer"></div>
+            </div>
+
+            <!-- SWOT -->
+            <div id="swotSection" style="display:none;">
+                <h3 class="section-title">SWOT Analysis</h3>
+                <div class="swot-grid" id="swotContainer"></div>
+            </div>
+
+            <!-- Comparisons -->
+            <div id="comparisonsSection" style="display:none;">
+                <h3 class="section-title">Comparisons</h3>
+                <div id="comparisonsContainer"></div>
+            </div>
+
+            <!-- Insights -->
+            <div id="insightsSection" style="display:none;">
+                <h3 class="section-title">Key Insights</h3>
+                <div class="cards-grid" id="insightsContainer"></div>
+            </div>
+
+            <!-- Recommendations -->
+            <div id="recommendationsSection" style="display:none;">
+                <h3 class="section-title">Recommendations</h3>
+                <div id="recommendationsContainer"></div>
+            </div>
+
+            <!-- Action Plan -->
+            <div id="actionPlanSection" style="display:none;">
+                <h3 class="section-title">Action Plan</h3>
+                <div id="actionPlanContainer"></div>
+            </div>
+
+            <!-- Report -->
+            <div id="reportSection" style="display:none;">
+                <h3 class="section-title">Full Report</h3>
+                <div class="report-content" id="reportContent"></div>
+            </div>
+
+            <!-- Sources -->
+            <div id="sourcesSection" style="display:none;">
+                <h3 class="section-title">Sources</h3>
+                <div class="sources-list" id="sourcesContainer"></div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <p>Powered by Competitive Analysis Orchestrator</p>
+    </footer>
+
+    <script>
+        const API_URL = 'http://localhost:8001/api/v1/analyze';
+
+        // Form submission
+        document.getElementById('analysisForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const formData = new FormData(e.target);
+            const data = {
+                business_name: formData.get('business_name'),
+                idea: formData.get('idea'),
+                industry: formData.get('industry'),
+                target_customers: formData.get('target_customers') || '',
+                geography: formData.get('geography') || '',
+                pricing: formData.get('pricing') || '',
+                business_model: formData.get('business_model') || '',
+                differentiators: formData.get('differentiators') || '',
+                user_query: formData.get('user_query') || '',
+                competitors: formData.get('competitors').split(',').map(s => s.trim()).filter(Boolean),
+                research_goals: formData.get('research_goals').split(',').map(s => s.trim()).filter(Boolean),
+                products_services: formData.get('products_services').split(',').map(s => s.trim()).filter(Boolean),
+            };
+
+            // Show loading
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('results').classList.remove('active');
+            document.getElementById('errorMessage').classList.remove('active');
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API error: ${response.status}`);
+                }
+
+                const result = await response.json();
+                displayResults(result);
+
+            } catch (error) {
+                document.getElementById('errorMessage').textContent = `Error: ${error.message}`;
+                document.getElementById('errorMessage').classList.add('active');
+            } finally {
+                document.getElementById('loading').classList.remove('active');
+            }
+        });
+
+        function displayResults(data) {
+            document.getElementById('results').classList.add('active');
+
+            // Business Summary
+            document.getElementById('businessSummary').textContent = data.business_summary || '';
+
+            // Charts
+            if (data.charts?.length) {
+                document.getElementById('chartsSection').style.display = 'block';
+                const container = document.getElementById('chartsContainer');
+                container.innerHTML = data.charts.map(chart => renderChart(chart)).join('');
+            }
+
+            // Competitors
+            if (data.competitors?.length) {
+                document.getElementById('competitorsSection').style.display = 'block';
+                const container = document.getElementById('competitorsContainer');
+                container.innerHTML = data.competitors.map(comp => `
+                    <div class="card competitor-card">
+                        <div class="competitor-name">${comp.name}</div>
+                        <div class="competitor-desc">${comp.description || ''}</div>
+                        ${comp.strengths?.length ? `
+                            <div class="tag-list">
+                                ${comp.strengths.map(s => `<span class="tag strength">${s}</span>`).join('')}
+                            </div>
+                        ` : ''}
+                        ${comp.weaknesses?.length ? `
+                            <div class="tag-list">
+                                ${comp.weaknesses.map(w => `<span class="tag weakness">${w}</span>`).join('')}
+                            </div>
+                        ` : ''}
+                        ${comp.explanation ? `<p style="margin-top:0.5rem;font-size:0.85rem;color:var(--gray-500);">${comp.explanation}</p>` : ''}
+                    </div>
+                `).join('');
+            }
+
+            // SWOT
+            if (data.swot) {
+                document.getElementById('swotSection').style.display = 'block';
+                const swot = data.swot;
+                document.getElementById('swotContainer').innerHTML = `
+                    <div class="swot-item strengths">
+                        <h4>Strengths</h4>
+                        <ul>${swot.strengths?.map(s => `<li><div class="point">${s.point}</div>${s.explanation ? `<div class="explanation">${s.explanation}</div>` : ''}</li>`).join('') || '<li>None identified</li>'}</ul>
+                    </div>
+                    <div class="swot-item weaknesses">
+                        <h4>Weaknesses</h4>
+                        <ul>${swot.weaknesses?.map(w => `<li><div class="point">${w.point}</div>${w.explanation ? `<div class="explanation">${w.explanation}</div>` : ''}</li>`).join('') || '<li>None identified</li>'}</ul>
+                    </div>
+                    <div class="swot-item opportunities">
+                        <h4>Opportunities</h4>
+                        <ul>${swot.opportunities?.map(o => `<li><div class="point">${o.point}</div>${o.explanation ? `<div class="explanation">${o.explanation}</div>` : ''}</li>`).join('') || '<li>None identified</li>'}</ul>
+                    </div>
+                    <div class="swot-item threats">
+                        <h4>Threats</h4>
+                        <ul>${swot.threats?.map(t => `<li><div class="point">${t.point}</div>${t.explanation ? `<div class="explanation">${t.explanation}</div>` : ''}</li>`).join('') || '<li>None identified</li>'}</ul>
+                    </div>
+                `;
+            }
+
+            // Comparisons
+            if (data.comparisons?.length) {
+                document.getElementById('comparisonsSection').style.display = 'block';
+                document.getElementById('comparisonsContainer').innerHTML = data.comparisons.map(comp => `
+                    <div class="chart-container">
+                        <div class="chart-title">${comp.title}</div>
+                        <div class="table-container">
+                            <table class="comparison-table">
+                                <thead>
+                                    <tr>
+                                        <th>Feature</th>
+                                        ${comp.entities.map(e => `<th>${e}</th>`).join('')}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${comp.rows.map(row => `
+                                        <tr>
+                                            <td>${row.feature}</td>
+                                            ${comp.entities.map(e => `<td>${row.values[e] || '-'}</td>`).join('')}
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                        ${comp.explanation ? `<p style="margin-top:0.75rem;font-size:0.85rem;color:var(--gray-500);">${comp.explanation}</p>` : ''}
+                    </div>
+                `).join('');
+            }
+
+            // Insights
+            if (data.insights?.length) {
+                document.getElementById('insightsSection').style.display = 'block';
+                document.getElementById('insightsContainer').innerHTML = data.insights.map(insight => `
+                    <div class="card insight-card ${insight.importance}">
+                        <div class="insight-title">${insight.title}</div>
+                        <div class="insight-desc">${insight.description}</div>
+                        <div class="insight-meta">
+                            <span class="badge badge-${insight.importance}">${insight.importance}</span>
+                            ${insight.source ? `<span>${insight.source}</span>` : ''}
+                        </div>
+                        ${insight.explanation ? `<p style="margin-top:0.5rem;font-size:0.85rem;color:var(--gray-500);">${insight.explanation}</p>` : ''}
+                    </div>
+                `).join('');
+            }
+
+            // Recommendations
+            if (data.recommendations?.length) {
+                document.getElementById('recommendationsSection').style.display = 'block';
+                document.getElementById('recommendationsContainer').innerHTML = data.recommendations.map(rec => `
+                    <div class="card recommendation-card" style="margin-bottom:1rem;">
+                        <h4>${rec.title}</h4>
+                        <p style="color:var(--gray-500);margin:0.5rem 0;">${rec.description}</p>
+                        <div class="tag-list">
+                            <span class="badge badge-${rec.priority}">${rec.priority} priority</span>
+                        </div>
+                        ${rec.rationale ? `<p style="margin-top:0.5rem;font-size:0.9rem;"><strong>Why:</strong> ${rec.rationale}</p>` : ''}
+                        ${rec.explanation ? `<p style="margin-top:0.25rem;font-size:0.85rem;color:var(--gray-500);">${rec.explanation}</p>` : ''}
+                    </div>
+                `).join('');
+            }
+
+            // Action Plan
+            if (data.action_plan?.length) {
+                document.getElementById('actionPlanSection').style.display = 'block';
+                document.getElementById('actionPlanContainer').innerHTML = data.action_plan.map((action, i) => `
+                    <div class="action-item">
+                        <div class="action-number">${i + 1}</div>
+                        <div class="action-content">
+                            <h4>${action.action}</h4>
+                            <div class="action-meta">
+                                <span class="badge badge-${action.priority}">${action.priority}</span>
+                                ${action.timeline ? `<span>Timeline: ${action.timeline}</span>` : ''}
+                            </div>
+                            ${action.expected_outcome ? `<p style="margin-top:0.5rem;font-size:0.9rem;color:var(--gray-500);"><strong>Expected:</strong> ${action.expected_outcome}</p>` : ''}
+                            ${action.explanation ? `<p style="margin-top:0.25rem;font-size:0.85rem;color:var(--gray-500);">${action.explanation}</p>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            // Report
+            if (data.report) {
+                document.getElementById('reportSection').style.display = 'block';
+                document.getElementById('reportContent').innerHTML = simpleMarkdown(data.report);
+            }
+
+            // Sources
+            if (data.sources?.length) {
+                document.getElementById('sourcesSection').style.display = 'block';
+                document.getElementById('sourcesContainer').innerHTML = data.sources.map(src => `
+                    <a href="${src.source}" target="_blank" class="source-link">${src.relevance || src.source}</a>
+                `).join('');
+            }
+        }
+
+        function renderChart(chart) {
+            if (chart.chart_type === 'bar') {
+                const maxValue = Math.max(...chart.datasets[0].data);
+                return `
+                    <div class="chart-container">
+                        <div class="chart-title">${chart.title}</div>
+                        <div class="bar-chart">
+                            ${chart.labels.map((label, i) => `
+                                <div class="bar-group">
+                                    <div class="bar-value">${chart.datasets[0].data[i]}</div>
+                                    <div class="bar" style="height: ${(chart.datasets[0].data[i] / maxValue) * 150}px;"></div>
+                                    <div class="bar-label">${label}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                        ${chart.explanation ? `<p style="margin-top:0.75rem;font-size:0.85rem;color:var(--gray-500);text-align:center;">${chart.explanation}</p>` : ''}
+                    </div>
+                `;
+            }
+
+            if (chart.chart_type === 'pie') {
+                const colors = ['#4F46E5', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'];
+                const total = chart.datasets[0].data.reduce((a, b) => a + b, 0);
+                let gradient = 'conic-gradient(';
+                let currentAngle = 0;
+
+                chart.datasets[0].data.forEach((value, i) => {
+                    const angle = (value / total) * 360;
+                    gradient += `${colors[i % colors.length]} ${currentAngle}deg ${currentAngle + angle}deg`;
+                    if (i < chart.datasets[0].data.length - 1) gradient += ', ';
+                    currentAngle += angle;
+                });
+                gradient += ')';
+
+                return `
+                    <div class="chart-container">
+                        <div class="chart-title">${chart.title}</div>
+                        <div class="pie-chart-container">
+                            <div class="pie-chart" style="background: ${gradient};"></div>
+                            <div class="pie-legend">
+                                ${chart.labels.map((label, i) => `
+                                    <div class="legend-item">
+                                        <div class="legend-color" style="background: ${colors[i % colors.length]};"></div>
+                                        <span>${label}: ${chart.datasets[0].data[i]}</span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                        ${chart.explanation ? `<p style="margin-top:0.75rem;font-size:0.85rem;color:var(--gray-500);text-align:center;">${chart.explanation}</p>` : ''}
+                    </div>
+                `;
+            }
+
+            return `<div class="chart-container"><div class="chart-title">${chart.title}</div><p>Chart type: ${chart.chart_type}</p></div>`;
+        }
+
+        function simpleMarkdown(md) {
+            return md
+                .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+                .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+                .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+                .replace(/\*\*(.*)\*\*/gim, '<strong>$1</strong>')
+                .replace(/\*(.*)\*/gim, '<em>$1</em>')
+                .replace(/\n/gim, '<br>');
+        }
+    </script>
+</body>
+</html>
