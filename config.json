@@ -97,7 +97,7 @@
   },
   "scraper": {
     "use_mock": true,
-    "service_url": "http://localhost:8002",
+    "service_url": "https://webhunter-1v83.onrender.com",
     "timeout": 30
   },
   "cors": {
