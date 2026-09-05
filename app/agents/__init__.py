@@ -6,6 +6,7 @@ from app.agents.competitor_analysis import CompetitorAnalysisAgent
 from app.agents.visualization_agent import VisualizationAgent
 from app.agents.strategy_agent import StrategyAgent
 from app.agents.report_agent import ReportAgent
+from app.agents.web_search_agent import WebSearchAgent
 
 __all__ = [
     "BaseAgent",
@@ -18,4 +19,5 @@ __all__ = [
     "VisualizationAgent",
     "StrategyAgent",
     "ReportAgent",
+    "WebSearchAgent",
 ]

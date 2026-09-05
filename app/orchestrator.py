@@ -1,3 +1,4 @@
+import re
 import time
 
 import structlog
@@ -9,9 +10,10 @@ from app.agents.report_agent import ReportAgent
 from app.agents.research_planner import ResearchPlannerAgent
 from app.agents.strategy_agent import StrategyAgent
 from app.agents.visualization_agent import VisualizationAgent
+from app.agents.web_search_agent import WebSearchAgent
 from app.schemas.analysis import Insight
 from app.schemas.business import FormInput
-from app.schemas.output import AnalysisResult
+from app.schemas.output import AnalysisResult, SourceReference
 from app.services.llm_client import AgentLLMClient
 from app.services.scraper_client import get_scraper_provider
 
@@ -40,6 +42,7 @@ class Orchestrator:
             self.visualizer = VisualizationAgent(llm_client)
             self.strategist = StrategyAgent(llm_client)
             self.reporter = ReportAgent(llm_client)
+            self.web_searcher = WebSearchAgent(llm_client)
         else:
             self.llm = AgentLLMClient("default")
             self.business_parser = BusinessParserAgent(
@@ -63,9 +66,14 @@ class Orchestrator:
             self.reporter = ReportAgent(
                 AgentLLMClient("report")
             )
+            self.web_searcher = WebSearchAgent(
+                AgentLLMClient("research_planner")
+            )
 
         # Scraper service
         self.scraper = get_scraper_provider()
+        # Track unknown terms found during analysis
+        self.unknown_terms: list[dict] = []
 
     async def run_analysis(self, form_input: FormInput) -> AnalysisResult:
         """
@@ -89,6 +97,12 @@ class Orchestrator:
             profile = await self.business_parser.parse(form_input)
             business_summary = profile.summary
             log.info("business_parsed", profile_name=profile.business_name)
+
+            # Step 2.5: Research any unknown terms from the form
+            # (competitors, products, or other entities the user mentioned)
+            await self._research_unknown_terms(
+                profile, form_input, log
+            )
 
             # Step 3: Create research execution plan
             plan = await self.research_planner.create_plan(profile)
@@ -125,6 +139,9 @@ class Orchestrator:
             # Step 8: Generate insights from all data
             insights = self._generate_insights(profile, competitors, swot, context)
 
+            # Add insights from web-researched unknown terms
+            insights.extend(self._generate_unknown_term_insights())
+
             # Step 9: Compile final report
             processing_time_ms = int((time.time() - start_time) * 1000)
             result = await self.reporter.compile(
@@ -138,6 +155,7 @@ class Orchestrator:
                 recommendations=recommendations,
                 action_plan=action_plan,
                 research_context=context,
+                unknown_terms=self.unknown_terms,
                 processing_time_ms=processing_time_ms,
             )
 
@@ -154,6 +172,98 @@ class Orchestrator:
         except Exception as e:
             log.error("analysis_failed", error=str(e))
             raise
+
+    async def _research_unknown_terms(
+        self,
+        profile,
+        form_input: FormInput,
+        log,
+    ) -> None:
+        """
+        Detect and research unknown terms from the user's input.
+        Triggers web search for competitors or products the LLM doesn't recognize.
+        Results are stored in self.unknown_terms and included in the final report.
+        """
+        # Collect candidate terms: competitors, products, user query keywords
+        candidates: list[str] = []
+
+        # Competitors explicitly mentioned
+        if profile.competitors:
+            candidates.extend(profile.competitors)
+
+        # Products/services mentioned
+        if profile.products_services:
+            candidates.extend(profile.products_services)
+
+        # Extract entities from user query
+        if profile.user_query:
+            query_entities = self._extract_entities_from_text(profile.user_query)
+            candidates.extend(query_entities)
+
+        # Deduplicate and filter
+        seen = set()
+        unique_terms = []
+        for term in candidates:
+            cleaned = term.strip()
+            if cleaned and cleaned.lower() not in seen and len(cleaned) > 2:
+                seen.add(cleaned.lower())
+                unique_terms.append(cleaned)
+
+        if not unique_terms:
+            return
+
+        log.info("researching_unknown_terms", count=len(unique_terms))
+
+        # Build context for keyword extraction
+        context = f"{profile.business_name} {profile.industry} {profile.user_query or ''}"
+
+        # Research each unknown term
+        for term in unique_terms[:5]:  # Limit to 5 to avoid API overload
+            try:
+                result = await self.web_searcher.research_unknown_term(
+                    term=term,
+                    context=context,
+                )
+                if result.get("found"):
+                    log.info(
+                        "term_researched",
+                        term=term,
+                        type=result.get("type"),
+                        relevance=result.get("relevance"),
+                    )
+                    self.unknown_terms.append(result)
+            except Exception as e:
+                log.warning("term_research_failed", term=term, error=str(e))
+
+    def _extract_entities_from_text(self, text: str) -> list[str]:
+        """Extract potential entity names (capitalized phrases) from text."""
+        # Find capitalized words/phrases (likely product/company names)
+        entities = re.findall(r"\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*\b", text)
+        # Filter out common sentence starters
+        stop_phrases = {"I", "The", "This", "That", "We", "Our", "It", "A", "An"}
+        return [e for e in entities if e not in stop_phrases][:3]
+
+    def _generate_unknown_term_insights(self) -> list[Insight]:
+        """Generate insights from web-researched unknown terms."""
+        insights = []
+        for term_data in self.unknown_terms:
+            term = term_data.get("term", "Unknown")
+            summary = term_data.get("summary", "")
+            term_type = term_data.get("type", "entity")
+            relevance = term_data.get("relevance", "unknown")
+
+            insights.append(Insight(
+                title=f"Researched: {term}",
+                description=summary,
+                importance="high" if relevance == "high" else "medium",
+                source="web_search",
+                explanation=(
+                    f"This term was not recognized by the initial analysis, "
+                    f"so it was researched via web search. "
+                    f"Type: {term_type}, Relevance: {relevance}."
+                ),
+            ))
+        return insights
 
     def _generate_insights(
         self,

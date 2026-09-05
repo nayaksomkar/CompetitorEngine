@@ -50,6 +50,7 @@ Do NOT invent information not present in the data."""
         recommendations: list[Recommendation],
         action_plan: list[ActionItem],
         research_context: dict,
+        unknown_terms: list[dict] | None = None,
         processing_time_ms: int = 0,
     ) -> AnalysisResult:
         """Compile all analysis components into final output."""
@@ -61,9 +62,13 @@ Do NOT invent information not present in the data."""
             profile, business_summary, competitors, swot, recommendations
         )
 
+        # Append unknown terms research to report
+        if unknown_terms:
+            report += self._format_unknown_terms_section(unknown_terms)
+
         # Collect all sources
         sources = self._collect_sources(
-            competitors, swot, insights, research_context
+            competitors, swot, insights, research_context, unknown_terms
         )
 
         # Build metadata
@@ -163,6 +168,7 @@ Top Recommendations:
         swot: SWOTAnalysis,
         insights: list[Insight],
         context: dict,
+        unknown_terms: list[dict] | None = None,
     ) -> list[SourceReference]:
         """Collect all source references from analysis components."""
         sources = []
@@ -206,6 +212,17 @@ Top Recommendations:
                         relevance=key,
                     ))
 
+        # Unknown terms sources (from web search fallback)
+        if unknown_terms:
+            for term_data in unknown_terms:
+                for url in term_data.get("sources", []):
+                    if url:
+                        sources.append(SourceReference(
+                            source=url,
+                            type="web_search",
+                            relevance=f"Researched term: {term_data.get('term', '')}",
+                        ))
+
         # Deduplicate
         seen = set()
         unique_sources = []
@@ -216,6 +233,30 @@ Top Recommendations:
                 unique_sources.append(s)
 
         return unique_sources
+
+    def _format_unknown_terms_section(self, unknown_terms: list[dict]) -> str:
+        """Format unknown terms research as a report section."""
+        lines = ["", "## Researched Terms", ""]
+        lines.append("The following terms were not recognized by the initial analysis")
+        lines.append("and were researched via web search:")
+        lines.append("")
+
+        for term_data in unknown_terms:
+            term = term_data.get("term", "Unknown")
+            summary = term_data.get("summary", "No information found")
+            term_type = term_data.get("type", "entity")
+            relevance = term_data.get("relevance", "unknown")
+
+            lines.append(f"### {term}")
+            lines.append(f"- **Type:** {term_type}")
+            lines.append(f"- **Relevance:** {relevance}")
+            lines.append(f"- **Summary:** {summary}")
+            sources = term_data.get("sources", [])
+            if sources:
+                lines.append(f"- **Sources:** {', '.join(s for s in sources if s)}")
+            lines.append("")
+
+        return "\n".join(lines)
 
     def _calculate_confidence(
         self,
