@@ -1,345 +1,395 @@
-import re
+"""
+CompetitorEngine — pure orchestrator.
+
+This module does no reasoning, no prompting, no scraping. Its only
+job is to:
+  1. Decide what information the user's request needs.
+  2. Call WebHunter for fresh external research when needed.
+  3. Call LLMPing to reason over that context.
+  4. Validate and normalize the response into a clean
+     frontend-ready shape.
+"""
 import time
+import uuid
+from typing import Any
 
 import structlog
 
-from app.agents.business_parser import BusinessParserAgent, ParsingValidationError
-from app.agents.competitor_analysis import CompetitorAnalysisAgent
-from app.agents.data_summary_agent import DataSummaryAgent
-from app.agents.report_agent import ReportAgent
-from app.agents.research_planner import ResearchPlannerAgent
-from app.agents.strategy_agent import StrategyAgent
-from app.agents.visualization_agent import VisualizationAgent
-from app.agents.web_search_agent import WebSearchAgent
-from app.schemas.analysis import Insight
-from app.schemas.business import FormInput
-from app.schemas.output import AnalysisResult, SourceReference
-from app.services.llm_client import AgentLLMClient
-from app.services.scraper_client import get_scraper_provider
+from app.schemas.analysis import (
+    ActionItem,
+    ChartData,
+    CompetitorCard,
+    Recommendation,
+    SWOTAnalysis,
+    SWOTItem,
+)
+from app.schemas.business import BusinessProfile, FormInput
+from app.schemas.output import (
+    AnalysisResult,
+    ChatResponse,
+    Metadata,
+    MetricCard,
+    SourceReference,
+)
+from app.services.llmping_client import LLMPingClient, LLMPingError
+from app.services.webhunter_client import WebHunterClient, WebHunterError
 
 logger = structlog.get_logger(__name__)
 
 
+# What the Overview analysis is required to return from LLMPing.
+OVERVIEW_REQUIRED_OUTPUTS = [
+    "executive_summary",
+    "market_info",
+    "competitors",
+    "positioning",
+    "swot",
+    "comparisons",
+    "gaps",
+    "opportunities",
+    "risks",
+    "recommendations",
+    "action_plan",
+    "visualizations",
+]
+
+
 class Orchestrator:
-    """
-    Central coordinator for the competitive analysis workflow.
-    Manages agent execution and data flow through the pipeline.
-    Each agent gets its own LLM client with provider configured from config.json.
-    """
+    """Stateless orchestration layer. Safe to construct per request."""
 
     def __init__(
         self,
-        llm_client: AgentLLMClient | None = None,
+        llmping: LLMPingClient | None = None,
+        webhunter: WebHunterClient | None = None,
     ):
-        # Use injected client for all agents when provided (enables test mocking)
-        # Fall back to agent-specific clients from config
-        if llm_client:
-            self.llm = llm_client
-            self.business_parser = BusinessParserAgent(llm_client)
-            self.research_planner = ResearchPlannerAgent(llm_client)
-            self.data_summarizer = DataSummaryAgent(llm_client)
-            self.competitor_analyzer = CompetitorAnalysisAgent(llm_client)
-            self.visualizer = VisualizationAgent(llm_client)
-            self.strategist = StrategyAgent(llm_client)
-            self.reporter = ReportAgent(llm_client)
-            self.web_searcher = WebSearchAgent(llm_client)
-        else:
-            self.llm = AgentLLMClient("default")
-            self.business_parser = BusinessParserAgent(
-                AgentLLMClient("business_parser")
-            )
-            self.research_planner = ResearchPlannerAgent(
-                AgentLLMClient("research_planner")
-            )
-            self.data_summarizer = DataSummaryAgent(
-                AgentLLMClient("research_planner")
-            )
-            self.competitor_analyzer = CompetitorAnalysisAgent(
-                AgentLLMClient("competitor_analysis")
-            )
-            self.visualizer = VisualizationAgent(
-                AgentLLMClient("visualization")
-            )
-            self.strategist = StrategyAgent(
-                AgentLLMClient("strategy")
-            )
-            self.reporter = ReportAgent(
-                AgentLLMClient("report")
-            )
-            self.web_searcher = WebSearchAgent(
-                AgentLLMClient("research_planner")
-            )
+        self.llmping = llmping or LLMPingClient()
+        self.webhunter = webhunter or WebHunterClient()
 
-        # Scraper service
-        self.scraper = get_scraper_provider()
-        # Track unknown terms found during analysis
-        self.unknown_terms: list[dict] = []
-
-    async def run_analysis(self, form_input: FormInput) -> AnalysisResult:
+    # ── Overview ───────────────────────────────────────────────
+    async def run_overview(self, form_input: FormInput) -> AnalysisResult:
         """
-        Execute the complete analysis pipeline.
-
-        Pipeline:
-        1. Parse business form -> BusinessProfile
-        2. Create research plan
-        3. Execute research steps (scraper -> summarize)
-        4. Competitor analysis
-        5. Strategy generation (SWOT, recommendations, action plan)
-        6. Visualization generation
-        7. Compile final report
+        Full competitive analysis pipeline:
+          WebHunter (fresh research) → LLMPing (synthesis) →
+          validate → AnalysisResult.
         """
-        start_time = time.time()
+        start = time.time()
         log = logger.bind(business=form_input.business_name)
-        log.info("analysis_started")
+        log.info("overview_started")
+
+        business = form_input.model_dump()
+
+        # Decide what research areas to request from WebHunter.
+        research_types = self._plan_research(form_input)
+        log.info("research_planned", types=research_types)
+
+        # 1. External research.
+        research: dict[str, Any] = {}
+        if research_types:
+            try:
+                research = await self.webhunter.research(
+                    business=business,
+                    research_types=research_types,
+                )
+            except WebHunterError as e:
+                # Never let a research failure kill the analysis —
+                # LLMPing can still synthesize from context alone.
+                log.warning("webhunter_failed_continuing", error=str(e))
+                research = {}
+
+        # 2. Reasoning over the gathered context.
+        payload = {
+            "task": "full_analysis",
+            "session_id": str(uuid.uuid4()),
+            "context": {
+                "business": business,
+                "research": research,
+            },
+            "required_outputs": OVERVIEW_REQUIRED_OUTPUTS,
+        }
 
         try:
-            # Step 1 + 2: Parse business form into structured profile
-            profile = await self.business_parser.parse(form_input)
-            business_summary = profile.summary
-            log.info("business_parsed", profile_name=profile.business_name)
-
-            # Step 2.5: Research any unknown terms from the form
-            # (competitors, products, or other entities the user mentioned)
-            # This step is non-critical: failures must not break analysis
-            try:
-                await self._research_unknown_terms(
-                    profile, form_input, log
-                )
-            except Exception as e:
-                log.warning("unknown_terms_research_skipped", error=str(e))
-
-            # Step 3: Create research execution plan
-            plan = await self.research_planner.create_plan(profile)
-            log.info("research_plan_created", steps=len(plan.steps))
-
-            # Step 4: Execute research steps
-            context: dict = {"profile": profile, "plan": plan}
-            for step in plan.steps:
-                if step.requires_research:
-                    log.info("executing_research_step", step=step.name)
-                    raw_data = await self.scraper.fetch(
-                        step.research_type,
-                        profile.model_dump(),
-                    )
-                    structured = await self.data_summarizer.summarize(raw_data)
-                    context[step.name] = structured
-
-            # Step 5: Competitor analysis
-            competitors = await self.competitor_analyzer.analyze(profile, context)
-            log.info("competitor_analysis_done", count=len(competitors))
-
-            # Step 6: Strategy generation
-            swot, recommendations, action_plan = await self.strategist.generate_strategy(
-                profile, context, competitors
-            )
-            log.info("strategy_generated")
-
-            # Step 7: Visualization generation
-            charts, comparisons = await self.visualizer.create_visualizations(
-                competitors, context, business_summary
-            )
-            log.info("visualizations_created")
-
-            # Step 8: Generate insights from all data
-            insights = self._generate_insights(profile, competitors, swot, context)
-
-            # Add insights from web-researched unknown terms
-            insights.extend(self._generate_unknown_term_insights())
-
-            # Step 9: Compile final report
-            processing_time_ms = int((time.time() - start_time) * 1000)
-            result = await self.reporter.compile(
-                profile=profile,
-                business_summary=business_summary,
-                competitors=competitors,
-                swot=swot,
-                comparisons=comparisons,
-                charts=charts,
-                insights=insights,
-                recommendations=recommendations,
-                action_plan=action_plan,
-                research_context=context,
-                unknown_terms=self.unknown_terms,
-                processing_time_ms=processing_time_ms,
-            )
-
-            log.info(
-                "analysis_complete",
-                processing_time_ms=processing_time_ms,
-                competitors=len(competitors),
-                recommendations=len(recommendations),
-            )
-            return result
-
-        except ParsingValidationError:
-            raise
-        except Exception as e:
-            log.error("analysis_failed", error=str(e))
+            llm_response = await self.llmping.chat(payload)
+        except LLMPingError:
+            log.error("llmping_failed")
             raise
 
-    async def _research_unknown_terms(
+        # 3. Validate + normalize → AnalysisResult.
+        result = self._build_analysis_result(
+            form_input=form_input,
+            llm_response=llm_response,
+            research=research,
+            processing_time_ms=int((time.time() - start) * 1000),
+        )
+
+        log.info(
+            "overview_complete",
+            processing_time_ms=result.metadata.processing_time_ms,
+            competitors=len(result.competitors),
+            recommendations=len(result.recommendations),
+        )
+        return result
+
+    # ── Chat follow-ups ────────────────────────────────────────
+    async def chat(
         self,
-        profile,
-        form_input: FormInput,
-        log,
-    ) -> None:
+        session_id: str | None,
+        message: str,
+        current_analysis: dict[str, Any] | None = None,
+        fresh_research: dict[str, Any] | None = None,
+    ) -> ChatResponse:
         """
-        Detect and research unknown terms from the user's input.
-        Triggers web search for competitors or products the LLM doesn't recognize.
-        Results are stored in self.unknown_terms and included in the final report.
-        Defensive: silently skips if web_searcher unavailable or all calls fail.
+        Conversational follow-up. Decides whether to call WebHunter
+        for fresh research or just hand the existing context to
+        LLMPing. Sessions are owned by LLMPing — we just forward
+        the session_id.
         """
-        # Guard: no web_searcher means no fallback research possible
-        if not hasattr(self, "web_searcher") or self.web_searcher is None:
-            return
+        sid = session_id or str(uuid.uuid4())
+        log = logger.bind(session_id=sid)
+        log.info("chat_started")
 
-        # Collect candidate terms: competitors, products, user query keywords
-        candidates: list[str] = []
-
-        # Competitors explicitly mentioned
-        if profile and getattr(profile, "competitors", None):
-            candidates.extend(profile.competitors)
-
-        # Products/services mentioned
-        if profile and getattr(profile, "products_services", None):
-            candidates.extend(profile.products_services)
-
-        # Extract entities from user query
-        if profile and getattr(profile, "user_query", None):
-            try:
-                query_entities = self._extract_entities_from_text(profile.user_query)
-                candidates.extend(query_entities)
-            except Exception:
-                pass
-
-        # Deduplicate and filter
-        seen = set()
-        unique_terms = []
-        for term in candidates:
-            if not isinstance(term, str):
-                continue
-            cleaned = term.strip()
-            if cleaned and cleaned.lower() not in seen and len(cleaned) > 2:
-                seen.add(cleaned.lower())
-                unique_terms.append(cleaned)
-
-        if not unique_terms:
-            return
-
-        log.info("researching_unknown_terms", count=len(unique_terms))
-
-        # Build context for keyword extraction
-        business = getattr(profile, "business_name", "") if profile else ""
-        industry = getattr(profile, "industry", "") if profile else ""
-        query = getattr(profile, "user_query", "") if profile else ""
-        context = f"{business} {industry} {query}"
-
-        # Research each unknown term (limit to 5 to avoid API overload)
-        for term in unique_terms[:5]:
-            try:
-                result = await self.web_searcher.research_unknown_term(
-                    term=term,
-                    context=context,
-                )
-                if result and result.get("found"):
-                    log.info(
-                        "term_researched",
-                        term=term,
-                        type=result.get("type"),
-                        relevance=result.get("relevance"),
-                    )
-                    self.unknown_terms.append(result)
-            except Exception as e:
-                # Never let web search failure break the analysis pipeline
-                log.warning("term_research_failed", term=term, error=str(e))
-
-    def _extract_entities_from_text(self, text: str) -> list[str]:
-        """Extract potential entity names (capitalized phrases) from text."""
-        # Find capitalized words/phrases (likely product/company names)
-        entities = re.findall(r"\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*\b", text)
-        # Filter out common sentence starters and question words
-        stop_phrases = {
-            "I", "The", "This", "That", "We", "Our", "It", "A", "An",
-            "How", "What", "Why", "When", "Where", "Who", "Which",
-            "Can", "Could", "Should", "Would", "Will", "Do", "Does",
-            "Did", "Is", "Are", "Was", "Were", "Have", "Has", "Had",
+        # 1. Ask LLMPing whether new research is required.
+        decision_payload = {
+            "task": "decide_research_need",
+            "session_id": sid,
+            "message": message,
+            "current_context": current_analysis,
         }
-        filtered = [e for e in entities if e not in stop_phrases]
-        # Only keep multi-word entities or known company-like names (2+ words, or single capitalized >3 chars)
-        return [e for e in filtered if " " in e or len(e) > 3][:3]
+        decision: dict[str, Any] = {}
+        try:
+            decision = await self.llmping.chat(decision_payload)
+        except LLMPingError as e:
+            log.warning("llmping_decide_failed", error=str(e))
 
-    def _generate_unknown_term_insights(self) -> list[Insight]:
-        """Generate insights from web-researched unknown terms."""
-        insights = []
-        for term_data in self.unknown_terms:
-            term = term_data.get("term", "Unknown")
-            summary = term_data.get("summary", "")
-            term_type = term_data.get("type", "entity")
-            relevance = term_data.get("relevance", "unknown")
+        needs_research = bool(decision.get("needs_research"))
+        research_types = decision.get("research_plan") or []
+        include_viz = bool(decision.get("wants_visualizations"))
 
-            insights.append(Insight(
-                title=f"Researched: {term}",
-                description=summary,
-                importance="high" if relevance == "high" else "medium",
-                source="web_search",
-                explanation=(
-                    f"This term was not recognized by the initial analysis, "
-                    f"so it was researched via web search. "
-                    f"Type: {term_type}, Relevance: {relevance}."
-                ),
-            ))
-        return insights
+        # 2. Optionally call WebHunter.
+        research_data = fresh_research or {}
+        if needs_research and research_types and not fresh_research:
+            try:
+                research_data = await self.webhunter.research(
+                    business=(current_analysis or {}).get("profile") or {},
+                    research_types=research_types,
+                )
+            except WebHunterError as e:
+                log.warning("webhunter_chat_failed", error=str(e))
+                research_data = {}
 
-    def _generate_insights(
+        # 3. Get the answer from LLMPing.
+        answer_payload = {
+            "task": "answer_question",
+            "session_id": sid,
+            "message": message,
+            "current_context": current_analysis,
+            "fresh_research": research_data,
+            "include_visualizations": include_viz,
+        }
+        llm_response = await self.llmping.chat(answer_payload)
+
+        # 4. Normalize to ChatResponse.
+        return ChatResponse(
+            session_id=sid,
+            answer=str(llm_response.get("answer", "")),
+            mini_charts=self._sanitize_charts(
+                llm_response.get("charts") or llm_response.get("visualizations")
+            ),
+            metric_cards=self._sanitize_metric_cards(
+                llm_response.get("metric_cards")
+            ),
+            sources=self._sanitize_sources(
+                llm_response.get("sources"), research_data
+            ),
+        )
+
+    # ── Internals ──────────────────────────────────────────────
+    def _plan_research(self, form_input: FormInput) -> list[str]:
+        """Decide which research areas to request from WebHunter."""
+        # Honor explicit user goals if present, otherwise fall back
+        # to a sensible default set.
+        explicit = [
+            g.strip()
+            for g in (form_input.research_goals or [])
+            if g.strip()
+        ]
+        if explicit:
+            return explicit
+
+        default = [
+            "competitor_research",
+            "pricing_research",
+            "customer_reviews",
+            "market_gap",
+        ]
+        # If the user mentioned competitors, narrow to competitor +
+        # pricing to save WebHunter calls.
+        if form_input.competitors:
+            return ["competitor_research", "pricing_research"]
+        return default
+
+    def _build_analysis_result(
         self,
-        profile,
-        competitors,
-        swot,
-        context,
-    ) -> list[Insight]:
-        """Generate key insights from all analysis data."""
-        insights = []
+        form_input: FormInput,
+        llm_response: dict[str, Any],
+        research: dict[str, Any],
+        processing_time_ms: int,
+    ) -> AnalysisResult:
+        """Validate LLMPing's response and assemble AnalysisResult."""
+        missing = [
+            k for k in OVERVIEW_REQUIRED_OUTPUTS if k not in llm_response
+        ]
+        if missing:
+            raise LLMPingError(
+                f"LLMPing response missing required keys: {missing}"
+            )
 
-        # Market gap insights
-        if "market_gap" in context:
-            gap_data = context["market_gap"]
-            structured = gap_data.get("structured", {})
-            gaps = structured.get("gaps_identified", [])
-            for gap in gaps[:3]:
-                if isinstance(gap, dict):
-                    insights.append(Insight(
-                        title=f"Market Gap: {gap.get('gap', 'Unknown')[:60]}",
-                        description=gap.get("gap", ""),
-                        importance="high" if gap.get("opportunity_size") == "high" else "medium",
-                        source=gap.get("source", "market_research"),
-                        explanation="This gap represents an unmet need your business could address",
-                    ))
+        # Build the BusinessProfile from the form (LLMPing is not
+        # allowed to invent fields that contradict the user's input).
+        profile = BusinessProfile(
+            business_name=form_input.business_name,
+            idea=form_input.idea,
+            industry=form_input.industry,
+            products_services=form_input.products_services or [],
+            target_customers=form_input.target_customers or "",
+            geography=form_input.geography or "",
+            pricing=form_input.pricing or "",
+            business_model=form_input.business_model or "",
+            competitors=form_input.competitors or [],
+            differentiators=form_input.differentiators or "",
+            research_goals=form_input.research_goals or [],
+            user_query=form_input.user_query or "",
+            summary=str(llm_response.get("business_summary") or ""),
+        )
 
-        # Competitive insights
-        if competitors:
-            insights.append(Insight(
-                title=f"Identified {len(competitors)} key competitors",
-                description="Direct competitors analyzed for positioning, strengths, and weaknesses",
-                importance="high",
-                source="competitor_research",
-                explanation="Understanding competitor landscape is essential for differentiation",
-            ))
+        charts = self._sanitize_charts(llm_response.get("visualizations"))
+        metric_cards = self._sanitize_metric_cards(
+            llm_response.get("metric_cards")
+        )
 
-        # SWOT-based insights
-        if swot.opportunities:
-            for opp in swot.opportunities[:2]:
-                insights.append(Insight(
-                    title=f"Opportunity: {opp.point[:60]}",
-                    description=opp.point,
-                    importance="high",
-                    source=opp.source or "swot_analysis",
-                    explanation=opp.explanation or "Strategic opportunity identified from analysis",
-                ))
+        # SWOT from LLMPing must be a dict with strengths/weaknesses/
+        # opportunities/threats lists.
+        swot_raw = llm_response.get("swot") or {}
+        swot = SWOTAnalysis(
+            strengths=[SWOTItem(**s) for s in swot_raw.get("strengths", []) if isinstance(s, dict)],
+            weaknesses=[SWOTItem(**w) for w in swot_raw.get("weaknesses", []) if isinstance(w, dict)],
+            opportunities=[SWOTItem(**o) for o in swot_raw.get("opportunities", []) if isinstance(o, dict)],
+            threats=[SWOTItem(**t) for t in swot_raw.get("threats", []) if isinstance(t, dict)],
+        )
 
-        return insights
+        competitors = [
+            CompetitorCard(**c)
+            for c in llm_response.get("competitors", [])
+            if isinstance(c, dict)
+        ]
+        recommendations = [
+            Recommendation(**r)
+            for r in llm_response.get("recommendations", [])
+            if isinstance(r, dict)
+        ]
+        action_plan = [
+            ActionItem(**a)
+            for a in llm_response.get("action_plan", [])
+            if isinstance(a, dict)
+        ]
 
+        return AnalysisResult(
+            business_summary=str(llm_response.get("business_summary") or ""),
+            profile=profile,
+            executive_summary=str(llm_response.get("executive_summary") or ""),
+            market_info=llm_response.get("market_info") or {},
+            positioning=str(llm_response.get("positioning") or ""),
+            gaps=[str(g) for g in llm_response.get("gaps", []) or []],
+            opportunities=[str(o) for o in llm_response.get("opportunities", []) or []],
+            risks=[str(r) for r in llm_response.get("risks", []) or []],
+            competitors=competitors,
+            swot=swot,
+            charts=charts,
+            metric_cards=metric_cards,
+            recommendations=recommendations,
+            action_plan=action_plan,
+            report=str(llm_response.get("report") or ""),
+            sources=self._sanitize_sources(
+                llm_response.get("sources"), research
+            ),
+            metadata=Metadata(processing_time_ms=processing_time_ms),
+        )
 
-async def run_analysis(form_input: FormInput) -> AnalysisResult:
-    """Convenience function to run analysis with default orchestrator."""
-    orchestrator = Orchestrator()
-    return await orchestrator.run_analysis(form_input)
+    # ── Sanitizers ─────────────────────────────────────────────
+    def _sanitize_charts(self, raw: Any) -> list[ChartData]:
+        """Drop charts whose data is empty. Never fabricate values."""
+        if not isinstance(raw, list):
+            return []
+        out: list[ChartData] = []
+        for c in raw:
+            if not isinstance(c, dict):
+                continue
+            try:
+                chart = ChartData(**c)
+            except Exception:
+                continue
+            # Must have data to be renderable.
+            has_labels = bool(chart.labels)
+            has_data = any(
+                bool(ds.get("data")) for ds in chart.datasets
+            )
+            if not (has_labels and has_data):
+                continue
+            out.append(chart)
+        return out
+
+    def _sanitize_metric_cards(self, raw: Any) -> list[MetricCard]:
+        """Drop metric cards missing a numeric value."""
+        if not isinstance(raw, list):
+            return []
+        out: list[MetricCard] = []
+        for c in raw:
+            if not isinstance(c, dict):
+                continue
+            value = c.get("value")
+            if not isinstance(value, (int, float)):
+                continue
+            try:
+                out.append(MetricCard(**c))
+            except Exception:
+                continue
+        return out
+
+    def _sanitize_sources(
+        self,
+        llm_sources: Any,
+        research: dict[str, Any],
+    ) -> list[SourceReference]:
+        """Collect sources from LLMPing + every WebHunter result."""
+        out: list[SourceReference] = []
+        if isinstance(llm_sources, list):
+            for s in llm_sources:
+                if isinstance(s, dict) and s.get("source"):
+                    try:
+                        out.append(SourceReference(**s))
+                    except Exception:
+                        continue
+                elif isinstance(s, str) and s:
+                    out.append(SourceReference(source=s, type="web"))
+        for research_type, payload in (research or {}).items():
+            if not isinstance(payload, dict):
+                continue
+            sources = payload.get("sources") or []
+            if isinstance(sources, list):
+                for s in sources:
+                    if isinstance(s, dict) and s.get("url"):
+                        out.append(
+                            SourceReference(
+                                source=s["url"],
+                                type="web",
+                                relevance=research_type,
+                            )
+                        )
+                    elif isinstance(s, str) and s:
+                        out.append(
+                            SourceReference(
+                                source=s,
+                                type="web",
+                                relevance=research_type,
+                            )
+                        )
+        return out

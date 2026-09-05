@@ -1,4 +1,5 @@
-from app.services.llm_client import LLMClient
-from app.services.scraper_client import ScraperProvider, MockScraperProvider, HttpScraperProvider
+"""CompetitorEngine service clients.
 
-__all__ = ["LLMClient", "ScraperProvider", "MockScraperProvider", "HttpScraperProvider"]
+Only thin HTTP wrappers — no reasoning, no scraping logic. The
+orchestrator uses these to call upstream services.
+"""

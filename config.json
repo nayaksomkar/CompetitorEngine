@@ -4,111 +4,11 @@
     "port": 8001,
     "log_level": "INFO"
   },
-  "llm": {
-    "providers": [
-      {
-        "name": "google_genai",
-        "url": "http://localhost:8000/chat",
-        "model": "gemini-2.5-flash",
-        "timeout": 30,
-        "max_retries": 2,
-        "enabled": true
-      },
-      {
-        "name": "mistral",
-        "url": "http://localhost:8000/chat",
-        "model": "mistral-small-latest",
-        "timeout": 30,
-        "max_retries": 2,
-        "enabled": true
-      },
-      {
-        "name": "groq",
-        "url": "http://localhost:8000/chat",
-        "model": "openai/gpt-oss-20b",
-        "timeout": 30,
-        "max_retries": 2,
-        "enabled": true
-      },
-      {
-        "name": "cerebras",
-        "url": "http://localhost:8000/chat",
-        "model": "gpt-oss-120b",
-        "timeout": 30,
-        "max_retries": 2,
-        "enabled": true
-      },
-      {
-        "name": "nvidia",
-        "url": "http://localhost:8000/chat",
-        "model": "openai/gpt-oss-20b",
-        "timeout": 30,
-        "max_retries": 2,
-        "enabled": false
-      }
-    ],
-    "fallback_chain": ["google_genai", "mistral", "groq", "cerebras"],
-    "default_provider": "google_genai"
-  },
-  "agents": {
-    "business_parser": {
-      "provider": "google_genai",
-      "model": "gemini-2.5-flash",
-      "fallback": "mistral",
-      "temperature": 0.3
-    },
-    "research_planner": {
-      "provider": "google_genai",
-      "model": "gemini-2.5-flash",
-      "fallback": "groq",
-      "temperature": 0.5
-    },
-    "competitor_analysis": {
-      "provider": "mistral",
-      "model": "mistral-small-latest",
-      "fallback": "google_genai",
-      "temperature": 0.4
-    },
-    "strategy": {
-      "provider": "groq",
-      "model": "openai/gpt-oss-20b",
-      "fallback": "cerebras",
-      "temperature": 0.6
-    },
-    "visualization": {
-      "provider": "google_genai",
-      "model": "gemini-2.5-flash",
-      "fallback": "mistral",
-      "temperature": 0.4
-    },
-    "report": {
-      "provider": "cerebras",
-      "model": "gpt-oss-120b",
-      "fallback": "groq",
-      "temperature": 0.5
-    }
-  },
-  "charts": {
-    "enabled_types": ["bar", "pie", "radar"],
-    "max_charts": 5,
-    "max_comparisons": 3,
-    "default_colors": ["#4F46E5", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"],
-    "fallback_enabled": true
-  },
-  "scraper": {
-    "use_mock": true,
-    "service_url": "https://webhunter-1v83.onrender.com",
-    "timeout": 30
-  },
   "cors": {
     "allowed_origins": [
       "https://nayaksomkar.github.io",
       "http://localhost:5173",
       "http://localhost:3000"
     ]
-  },
-  "session": {
-    "ttl": 1800,
-    "max_history": 5
   }
 }

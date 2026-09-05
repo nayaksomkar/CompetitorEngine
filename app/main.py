@@ -4,7 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routers import analysis_router
+from app.routers.chat import router as chat_router
+from app.routers.overview import router as overview_router
 
 # Configure structlog
 structlog.configure(
@@ -27,16 +28,18 @@ structlog.configure(
 
 logger = structlog.get_logger(__name__)
 
-# Create FastAPI app
 app = FastAPI(
-    title="Competitive Analysis Orchestrator",
-    description="Microservice 1: Orchestrator/Agent Controller for competitive analysis platform",
-    version="1.0.0",
+    title="CompetitorEngine",
+    description=(
+        "Pure orchestrator. Delegates research to WebHunter and "
+        "reasoning to LLMPing via HTTP."
+    ),
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
-# CORS middleware - hardcoded allowed origins
+# CORS — hardcoded allowed origins (Render env override workaround).
 ALLOWED_CORS_ORIGINS = [
     "https://nayaksomkar.github.io",
     "http://localhost:5173",
@@ -50,31 +53,36 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
-# Include routers
-app.include_router(analysis_router)
+# Routers
+app.include_router(overview_router)
+app.include_router(chat_router)
 
 
 @app.get("/health", tags=["health"])
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "ok", "service": "orchestrator", "version": "1.0.0"}
+    return {"status": "ok", "service": "orchestrator", "version": "2.0.0"}
 
 
 @app.get("/", tags=["root"])
 async def root():
-    """Root endpoint with service info."""
     return {
-        "service": "Competitive Analysis Orchestrator",
-        "version": "1.0.0",
+        "service": "CompetitorEngine",
+        "version": "2.0.0",
         "docs": "/docs",
         "health": "/health",
-        "analyze": "/api/v1/analyze",
+        "endpoints": {
+            "overview": "POST /api/v1/analyze",
+            "chat": "POST /api/v1/chat",
+        },
+        "upstream": {
+            "llmping": settings.llmping_url,
+            "webhunter": settings.webhunter_url,
+        },
     }
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Global exception handler for unhandled errors."""
     logger.error("unhandled_exception", error=str(exc), path=request.url.path)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -86,7 +94,6 @@ if __name__ == "__main__":
     import uvicorn
 
     service_config = settings.get_service_config()
-
     uvicorn.run(
         "app.main:app",
         host=service_config.get("host", settings.service_host),
