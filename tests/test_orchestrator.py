@@ -61,6 +61,10 @@ async def test_run_analysis_success(orchestrator, mock_llm, sample_form):
         "TestCo is an AI analytics platform for SMBs in the US.",
         # Step 2: Structured profile
         '{"business_name": "TestCo", "idea": "AI analytics", "industry": "SaaS", "products_services": ["Dashboard"], "target_customers": "SMBs", "geography": "US", "pricing": "$49/month", "business_model": "Subscription", "competitors": ["CompA"], "differentiators": "AI-first", "research_goals": ["competitor_research"], "user_query": "How to compete?"}',
+        # WebSearchAgent: CompA summary
+        "CompA is an analytics platform.",
+        # WebSearchAgent: Dashboard summary
+        "Dashboard is a product.",
         # Competitor analysis
         '[{"name": "CompA", "description": "Competitor", "strengths": ["Brand"], "weaknesses": ["Price"], "pricing": "$59/month", "market_position": "Leader", "source": "research", "explanation": "Main competitor"}]',
         # SWOT

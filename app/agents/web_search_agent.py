@@ -135,37 +135,56 @@ Rules:
         except Exception as e:
             logger.warning("scraper_search_failed", error=str(e))
 
-        # Fallback: use DuckDuckGo instant answer API
+        # Fallback: use DuckDuckGo HTML search (returns real results)
         try:
             import httpx
 
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(
+                timeout=10,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; CompetitorEngine/1.0)"},
+            ) as client:
                 response = await client.get(
-                    "https://api.duckduckgo.com/",
-                    params={
-                        "q": query,
-                        "format": "json",
-                        "no_html": "1",
-                        "skip_disambig": "1",
-                    },
+                    "https://html.duckduckgo.com/html/",
+                    params={"q": query},
                 )
                 if response.status_code == 200:
-                    data = response.json()
+                    import re
+                    from urllib.parse import unquote
+
+                    # Extract result links and snippets
+                    result_pattern = (
+                        r'class="result__a"[^>]*href="([^"]+)"[^>]*>([^<]+)</a>'
+                    )
+                    snippet_pattern = (
+                        r'class="result__snippet"[^>]*>(.*?)</a>'
+                    )
+                    links = re.findall(result_pattern, response.text, re.DOTALL)
+                    snippets = re.findall(
+                        snippet_pattern, response.text, re.DOTALL
+                    )
+
                     results = []
-                    if data.get("AbstractText"):
+                    for i, (url, title) in enumerate(links[:5]):
+                        # DuckDuckGo wraps URLs in a redirect - extract real URL
+                        real_url = url
+                        if "uddg=" in url:
+                            match = re.search(r"uddg=([^&]+)", url)
+                            if match:
+                                real_url = unquote(match.group(1))
+
+                        snippet = ""
+                        if i < len(snippets):
+                            # Strip HTML tags from snippet
+                            snippet = re.sub(r"<[^>]+>", "", snippets[i])
+                            snippet = snippet.strip()
+
                         results.append({
-                            "title": data.get("Heading", query),
-                            "snippet": data["AbstractText"],
-                            "url": data.get("AbstractURL", ""),
+                            "title": title.strip(),
+                            "snippet": snippet or title.strip(),
+                            "url": real_url,
                         })
-                    for topic in data.get("RelatedTopics", [])[:5]:
-                        if isinstance(topic, dict) and topic.get("Text"):
-                            results.append({
-                                "title": topic.get("Text", "")[:80],
-                                "snippet": topic["Text"],
-                                "url": topic.get("FirstURL", ""),
-                            })
-                    return results
+                    if results:
+                        return results
         except Exception as e:
             logger.warning("web_search_failed", error=str(e))
 

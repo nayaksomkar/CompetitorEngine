@@ -239,9 +239,16 @@ class Orchestrator:
         """Extract potential entity names (capitalized phrases) from text."""
         # Find capitalized words/phrases (likely product/company names)
         entities = re.findall(r"\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*\b", text)
-        # Filter out common sentence starters
-        stop_phrases = {"I", "The", "This", "That", "We", "Our", "It", "A", "An"}
-        return [e for e in entities if e not in stop_phrases][:3]
+        # Filter out common sentence starters and question words
+        stop_phrases = {
+            "I", "The", "This", "That", "We", "Our", "It", "A", "An",
+            "How", "What", "Why", "When", "Where", "Who", "Which",
+            "Can", "Could", "Should", "Would", "Will", "Do", "Does",
+            "Did", "Is", "Are", "Was", "Were", "Have", "Has", "Had",
+        }
+        filtered = [e for e in entities if e not in stop_phrases]
+        # Only keep multi-word entities or known company-like names (2+ words, or single capitalized >3 chars)
+        return [e for e in filtered if " " in e or len(e) > 3][:3]
 
     def _generate_unknown_term_insights(self) -> list[Insight]:
         """Generate insights from web-researched unknown terms."""
