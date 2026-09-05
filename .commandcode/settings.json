@@ -17,7 +17,17 @@
       "Shell(curl -s -X POST http://localhost:8001/api/v1/analyze  -H Content-Type: application/json  -d @/home/nsm/Documents/githubREPO/CompetitorEngine/microservice1/samples/sample_form_input.json)",
       "Shell(curl -s -X POST http://localhost:8001/api/v1/analyze \\ -H \"Content-Type: application/json\" \\ -d @/home/nsm/Documents/githubREPO/CompetitorEngine/microservice1/samples/sample_form_input.json)",
       "Shell(cd /home/nsm/Documents/githubREPO/CompetitorEngine && mv microservice1/* . && mv microservice1/.* . 2>/dev/null; rmdir microservice1 && ls -la)",
-      "Shell(rm:*)"
+      "Shell(rm:*)",
+      "Shell(git:*)",
+      "Shell(find:*)",
+      "Shell(cd /home/nsm/Documents/githubREPO/CompetitorEngine && git add .env README.md && git commit -F - <<'EOF' docs: add LLM connection checking instructions and update env config - Added .env file with Render LLM service URL - Added \"Checking LLM Connection\" section in README - No private keys or public domains exposed in docs Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)",
+      "Shell(cd /home/nsm/Documents/githubREPO/CompetitorEngine && git add README.md && git commit -F - <<'EOF' docs: add LLM connection checking instructions to README Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)",
+      "Shell(cd /home/nsm/Documents/githubREPO/CompetitorEngine && git log --all --oneline --grep=\"CORS\\|cors\" 2>/dev/null; echo \"---\"; git log --all -p --all --follow -- app/main.py 2>/dev/null | grep -A2 -B2 -i \"cors\" | head -30)",
+      "Shell(cd /home/nsm/Documents/githubREPO/CompetitorEngine && git add app/main.py && git commit -F - <<'EOF' fix: update CORS configuration to use explicit origins with credentials disabled Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)",
+      "Shell(cd /home/nsm/Documents/githubREPO/CompetitorEngine && git add README.md && git commit -F - <<'EOF' docs: add CORS configuration section for UI team Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)",
+      "Shell(cd /home/nsm/Documents/githubREPO/CompetitorEngine && git add README.md && git commit -F - <<'EOF' docs: simplify README for clarity and layman understanding Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)",
+      "Shell(cd /home/nsm/Documents/githubREPO/CompetitorEngine && git add README.md && git commit -F - <<'EOF' docs: remove JSON data examples from README Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF && git push origin master)",
+      "Shell(cd /home/nsm/Documents/githubREPO/CompetitorEngine && git add .commandcode/settings.json .commandcode/taste/taste-file/taste.md && git commit -F - <<'EOF' chore: update taste preferences and settings Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF && git push origin master)"
     ],
     "deny": [],
     "defaultMode": "default"

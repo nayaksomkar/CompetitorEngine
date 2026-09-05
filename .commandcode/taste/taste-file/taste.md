@@ -16,7 +16,7 @@
 - Includes health check endpoints (`/health`) in services. Confidence: 0.85
 - Writes pytest tests with mocking (AsyncMock) for unit and integration tests. Confidence: 0.85
 - Provides sample JSON data files for API documentation, test fixtures, and GitHub reference. Confidence: 0.8
-- Includes comprehensive README with architecture diagrams, quick start, API docs, and configuration tables. Confidence: 0.85
+- Prefers simple, minimal README documentation written in layman language — avoids verbose JSON data examples and excessive detail. Keeps only essential info (what the service does, how to run, key endpoints, field names). Confidence: 0.85
 - Uses Docker with healthcheck instructions for containerization. Confidence: 0.85
 - Provides highly detailed, structured requirements upfront covering architecture, components, data flow, and tech stack. Confidence: 0.9
 - Expects a plan/review step before large implementations. Confidence: 0.8
@@ -24,3 +24,4 @@
 - Prefers flat repository structure: when a repo IS a single microservice, code lives at the root, not nested inside a subfolder like `microservice1/`. Confidence: 0.8
 - Each backend microservice README must include a clear "API Contract" section with exact request/response JSON schemas so the UI team knows exactly what to send and render. Confidence: 0.95
 - Backend services should document UI integration instructions (how to render charts, tables, cards, handle "Explain This" tooltips with explanation fields). Confidence: 0.9
+- Wants taste/preference learnings recorded at the global root level (`taste.md`), not in project-specific subdirectories, so preferences apply across all projects. Confidence: 0.9
