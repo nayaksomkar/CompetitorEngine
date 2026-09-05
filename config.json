@@ -102,6 +102,7 @@
   },
   "cors": {
     "allowed_origins": [
+      "https://nayaksomkar.github.io",
       "http://localhost:5173",
       "http://localhost:3000"
     ]

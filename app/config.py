@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # CORS
-    allowed_origins: str = "http://localhost:3000,http://localhost:5173"
+    allowed_origins: str = "https://nayaksomkar.github.io,http://localhost:3000,http://localhost:5173"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
