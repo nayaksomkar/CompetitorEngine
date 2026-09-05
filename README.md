@@ -260,7 +260,7 @@ Returns `202 Accepted` with job ID (not yet implemented).
 
 ### Prerequisites
 - Python 3.11+
-- LLM Brain service running (default: `http://localhost:8000/chat`)
+- LLM Brain service URL (deployed separately)
 
 ### Run with uv
 ```bash
@@ -273,8 +273,34 @@ uvicorn app.main:app --reload --port 8001
 ### Run with Docker
 ```bash
 docker build -t competitor-orchestrator .
-docker run -d -p 8001:8001 -e LLM_SERVICE_URL=http://host.docker.internal:8000/chat competitor-orchestrator
+docker run -d -p 8001:8001 --env-file .env competitor-orchestrator
 ```
+
+---
+
+## Checking LLM Connection
+
+To verify the LLM service is reachable before running full analysis:
+
+### Using curl
+```bash
+# Test if LLM endpoint responds (replace with your LLM_SERVICE_URL)
+curl -X POST $LLM_SERVICE_URL \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Hello, respond with OK"}'
+```
+
+### Using the orchestrator logs
+```bash
+# Start the service and check logs for LLM connection status
+uvicorn app.main:app --reload --port 8001
+# Look for: "llm_response_received" (success) or "llm_connection_error" (failure)
+```
+
+### Common issues
+- **Connection refused**: LLM service not running or wrong URL
+- **Timeout**: Increase `LLM_TIMEOUT` in `.env`
+- **401/403**: Authentication required (add headers to LLMClient if needed)
 
 ---
 
