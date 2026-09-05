@@ -100,9 +100,13 @@ class Orchestrator:
 
             # Step 2.5: Research any unknown terms from the form
             # (competitors, products, or other entities the user mentioned)
-            await self._research_unknown_terms(
-                profile, form_input, log
-            )
+            # This step is non-critical: failures must not break analysis
+            try:
+                await self._research_unknown_terms(
+                    profile, form_input, log
+                )
+            except Exception as e:
+                log.warning("unknown_terms_research_skipped", error=str(e))
 
             # Step 3: Create research execution plan
             plan = await self.research_planner.create_plan(profile)
@@ -183,27 +187,37 @@ class Orchestrator:
         Detect and research unknown terms from the user's input.
         Triggers web search for competitors or products the LLM doesn't recognize.
         Results are stored in self.unknown_terms and included in the final report.
+        Defensive: silently skips if web_searcher unavailable or all calls fail.
         """
+        # Guard: no web_searcher means no fallback research possible
+        if not hasattr(self, "web_searcher") or self.web_searcher is None:
+            return
+
         # Collect candidate terms: competitors, products, user query keywords
         candidates: list[str] = []
 
         # Competitors explicitly mentioned
-        if profile.competitors:
+        if profile and getattr(profile, "competitors", None):
             candidates.extend(profile.competitors)
 
         # Products/services mentioned
-        if profile.products_services:
+        if profile and getattr(profile, "products_services", None):
             candidates.extend(profile.products_services)
 
         # Extract entities from user query
-        if profile.user_query:
-            query_entities = self._extract_entities_from_text(profile.user_query)
-            candidates.extend(query_entities)
+        if profile and getattr(profile, "user_query", None):
+            try:
+                query_entities = self._extract_entities_from_text(profile.user_query)
+                candidates.extend(query_entities)
+            except Exception:
+                pass
 
         # Deduplicate and filter
         seen = set()
         unique_terms = []
         for term in candidates:
+            if not isinstance(term, str):
+                continue
             cleaned = term.strip()
             if cleaned and cleaned.lower() not in seen and len(cleaned) > 2:
                 seen.add(cleaned.lower())
@@ -215,16 +229,19 @@ class Orchestrator:
         log.info("researching_unknown_terms", count=len(unique_terms))
 
         # Build context for keyword extraction
-        context = f"{profile.business_name} {profile.industry} {profile.user_query or ''}"
+        business = getattr(profile, "business_name", "") if profile else ""
+        industry = getattr(profile, "industry", "") if profile else ""
+        query = getattr(profile, "user_query", "") if profile else ""
+        context = f"{business} {industry} {query}"
 
-        # Research each unknown term
-        for term in unique_terms[:5]:  # Limit to 5 to avoid API overload
+        # Research each unknown term (limit to 5 to avoid API overload)
+        for term in unique_terms[:5]:
             try:
                 result = await self.web_searcher.research_unknown_term(
                     term=term,
                     context=context,
                 )
-                if result.get("found"):
+                if result and result.get("found"):
                     log.info(
                         "term_researched",
                         term=term,
@@ -233,6 +250,7 @@ class Orchestrator:
                     )
                     self.unknown_terms.append(result)
             except Exception as e:
+                # Never let web search failure break the analysis pipeline
                 log.warning("term_research_failed", term=term, error=str(e))
 
     def _extract_entities_from_text(self, text: str) -> list[str]:
