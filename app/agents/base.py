@@ -10,6 +10,18 @@ class AgentError(Exception):
     pass
 
 
+# Mapping from class names to config agent names
+AGENT_CONFIG_MAP = {
+    "BusinessParserAgent": "business_parser",
+    "ResearchPlannerAgent": "research_planner",
+    "DataSummaryAgent": "research_planner",
+    "CompetitorAnalysisAgent": "competitor_analysis",
+    "StrategyAgent": "strategy",
+    "VisualizationAgent": "visualization",
+    "ReportAgent": "report",
+}
+
+
 class BaseAgent:
     """
     Base class for all logical agents.
@@ -17,7 +29,9 @@ class BaseAgent:
     """
 
     def __init__(self, llm_client: AgentLLMClient | None = None):
-        self.llm = llm_client or AgentLLMClient(agent_name=self.__class__.__name__)
+        self.llm = llm_client or AgentLLMClient(
+            agent_name=AGENT_CONFIG_MAP.get(self.__class__.__name__, self.__class__.__name__)
+        )
         self.logger = logger.bind(agent=self.__class__.__name__)
 
     async def _query_llm(self, prompt: str) -> str:
