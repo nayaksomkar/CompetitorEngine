@@ -36,13 +36,18 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS middleware - origins from config.json
+# CORS middleware - hardcoded allowed origins
+ALLOWED_CORS_ORIGINS = [
+    "https://nayaksomkar.github.io",
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=ALLOWED_CORS_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # Include routers
