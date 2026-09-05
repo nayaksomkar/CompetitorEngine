@@ -394,3 +394,17 @@ Set `USE_MOCK_SCRAPER=false` and `SCRAPER_SERVICE_URL` when the scraper is built
    - `report` → Markdown display
 4. Use `explanation` fields for "Explain This" tooltips
 5. Display `sources` as citations/evidence
+
+### CORS Configuration
+The API allows requests from these origins:
+- `https://nayaksomkar.github.io` (GitHub Pages deployment)
+- `http://localhost:5173` (local development)
+
+If you need to add a new origin, update `app/main.py`:
+```python
+allow_origins=[
+    "https://nayaksomkar.github.io",
+    "http://localhost:5173",
+    "https://your-new-origin.com",  # Add here
+],
+```
