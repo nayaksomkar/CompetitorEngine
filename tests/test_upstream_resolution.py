@@ -107,9 +107,16 @@ async def test_webhunter_client_constructs_without_url():
 async def test_webhunter_client_resolves_lazily_on_first_call():
     c = WebHunterClient(base_url="")
 
+    # WebHunter /research/sync reply shape — status, search_results,
+    # crawled_contents etc. The adapter wraps these into {results: {...}}.
     mock_response = MagicMock(spec=httpx.Response)
     mock_response.status_code = 200
-    mock_response.json = MagicMock(return_value={"results": {}})
+    mock_response.json = MagicMock(return_value={
+        "status": "completed",
+        "query": "q",
+        "search_results": [],
+        "crawled_contents": [],
+    })
     mock_response.raise_for_status = MagicMock()
 
     with patch.object(
@@ -119,16 +126,13 @@ async def test_webhunter_client_resolves_lazily_on_first_call():
             client = MagicMock()
             client.post = AsyncMock(return_value=mock_response)
             gc.return_value = client
-            # Patch ResearchResponse.model_validate to accept anything.
-            with patch(
-                "app.services.webhunter_client.ResearchResponse.model_validate",
-                return_value=MagicMock(),
-            ):
-                results = await c.research(
-                    business={"business_name": "x"},
-                    research_types=["competitor_research"],
-                )
-    assert results == {}
+            results = await c.research(
+                business={"business_name": "x", "industry": "SaaS"},
+                research_types=["competitor_research"],
+            )
+    assert "results" in results
+    assert "competitor_research" in results["results"]
+    assert results["results"]["competitor_research"]["sources"] == []
 
 
 @pytest.mark.asyncio

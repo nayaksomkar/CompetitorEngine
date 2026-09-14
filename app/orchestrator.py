@@ -861,14 +861,23 @@ class Orchestrator:
         research: dict[str, Any],
         processing_time_ms: int,
     ) -> AnalysisResult:
-        """Validate LLMPing's response and assemble AnalysisResult."""
+        """Validate LLMPing's response and assemble AnalysisResult.
+
+        Tolerates partial responses: if structured keys (`competitors`,
+        `swot`, etc.) are absent, the orchestrator falls back to using
+        the `business_summary` / `answer` text and returns a result
+        the UI can still render. Transport-level failures (timeouts,
+        connection errors) still raise `LLMPingError` upstream.
+        """
         missing = [
             k for k in OVERVIEW_REQUIRED_OUTPUTS if k not in llm_response
         ]
         if missing:
-            raise LLMPingError(
-                f"LLMPing response missing required keys: {missing}"
-            )
+            # Don't fail the whole call — surface as a warning. The
+            # downstream ResultCounts / status logic will mark this as
+            # `partial` when key sections are empty.
+            log = logger.bind(missing=missing)
+            log.warning("llmping_response_partial")
 
         # Build the BusinessProfile from the form (LLMPing is not
         # allowed to invent fields that contradict the user's input).

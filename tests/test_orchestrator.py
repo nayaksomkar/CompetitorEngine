@@ -133,14 +133,25 @@ async def test_overview_continues_when_webhunter_fails():
 
 
 @pytest.mark.asyncio
-async def test_overview_raises_when_llmping_missing_required_keys():
+async def test_overview_tolerates_partial_llmping_response():
+    """When LLMPing returns only the free-text answer (no structured
+    keys), the orchestrator should still build an AnalysisResult
+    populated from the text — not raise."""
     llmping = AsyncMock(spec=LLMPingClient)
-    llmping.chat = AsyncMock(return_value={"business_summary": "x"})
+    llmping.chat = AsyncMock(
+        return_value={"answer": "Just the answer text",
+                      "business_summary": "Just the answer text"}
+    )
     webhunter = AsyncMock(spec=WebHunterClient)
     webhunter.research = AsyncMock(return_value={})
     orch = Orchestrator(llmping=llmping, webhunter=webhunter)
-    with pytest.raises(Exception):
-        await orch.run_overview(make_form())
+    result = await orch.run_overview(make_form())
+    assert isinstance(result, AnalysisResult)
+    # Partial response — structured sections empty, but business_summary
+    # is populated from the text fallback.
+    assert result.competitors == []
+    assert result.swot.strengths == []
+    assert result.business_summary == "Just the answer text"
 
 
 @pytest.mark.asyncio
