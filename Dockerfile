@@ -1,5 +1,10 @@
 FROM python:3.11-slim
 
+LABEL org.opencontainers.image.title="CompetitorEngine" \
+      org.opencontainers.image.description="Competitor analysis orchestrator (WebHunter + LLMPing)" \
+      org.opencontainers.image.source="https://github.com/your-org/CompetitorEngine" \
+      org.opencontainers.image.licenses="MIT"
+
 WORKDIR /app
 
 COPY requirements.txt .
