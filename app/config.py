@@ -8,10 +8,11 @@ class Settings(BaseSettings):
     """CompetitorEngine runtime settings.
 
     Service URLs come from environment variables (LLMPING_URL,
-    WEBHUNTER_URL). The app fails fast at startup if either is
-    missing — there are no hardcoded defaults because we never want
-    a silently misconfigured orchestrator running with no real
-    services behind it.
+    WEBHUNTER_URL). When unset, the orchestrator auto-discovers
+    sibling containers at runtime (see app/services/discovery.py).
+    Set REQUIRE_SERVICE_URLS=true to restore the old fail-fast
+    behavior for production deployments where a missing upstream is
+    a misconfiguration rather than an expected cold start.
     """
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -19,13 +20,19 @@ class Settings(BaseSettings):
     # Config file path (only used for service{} and cors{} blocks)
     config_path: str = str(Path(__file__).parent.parent / "config.json")
 
-    # Service URLs — required
+    # Service URLs — optional when REQUIRE_SERVICE_URLS is false.
     llmping_url: str = ""
     llmping_timeout: int = 60
     llmping_api_key: str | None = None
 
     webhunter_url: str = ""
     webhunter_timeout: int = 30
+
+    # Discovery controls
+    require_service_urls: bool = False
+    discovery_timeout_seconds: float = 2.0
+    discovery_candidates_llmping: str = ""
+    discovery_candidates_webhunter: str = ""
 
     # Service (host/port/log_level)
     service_host: str = "0.0.0.0"
@@ -39,17 +46,22 @@ class Settings(BaseSettings):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Fail-fast: refuse to start without both service URLs.
-        if not self.llmping_url:
-            raise RuntimeError(
-                "LLMPING_URL is not set. CompetitorEngine refuses to "
-                "start without an LLMPing endpoint."
-            )
-        if not self.webhunter_url:
-            raise RuntimeError(
-                "WEBHUNTER_URL is not set. CompetitorEngine refuses to "
-                "start without a WebHunter endpoint."
-            )
+        # Optional fail-fast: opt-in via REQUIRE_SERVICE_URLS=true.
+        # By default the orchestrator boots without URLs and resolves
+        # them on demand via service discovery.
+        if self.require_service_urls:
+            if not self.llmping_url:
+                raise RuntimeError(
+                    "LLMPING_URL is not set. REQUIRE_SERVICE_URLS is "
+                    "enabled; refusing to start without an LLMPing "
+                    "endpoint."
+                )
+            if not self.webhunter_url:
+                raise RuntimeError(
+                    "WEBHUNTER_URL is not set. REQUIRE_SERVICE_URLS is "
+                    "enabled; refusing to start without a WebHunter "
+                    "endpoint."
+                )
 
     def _load_config(self) -> dict:
         try:

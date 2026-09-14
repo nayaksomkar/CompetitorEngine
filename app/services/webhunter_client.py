@@ -2,12 +2,18 @@
 WebHunter HTTP client.
 
 CompetitorEngine never crawls or searches the web itself. All
-external research is delegated to WebHunter via HTTP. This client
-is the only seam to the research layer.
+external research is delegated to WebHunter via HTTP. This client is
+the only seam to the research layer.
 
-Fail-fast: if WEBHUNTER_URL is unset, the app refuses to start (see
-app/config.py).
+Resolution is lazy: when no `WEBHUNTER_URL` is configured, the first
+outbound call probes a candidate list (host.docker.internal:8765,
+webhunter:8000, localhost:8765, plus any user-supplied extras) and
+caches whichever upstream answers first. See
+app/services/discovery.py.
 """
+from __future__ import annotations
+
+import asyncio
 from typing import Any
 
 import httpx
@@ -15,6 +21,7 @@ import structlog
 
 from app.config import settings
 from app.schemas.research import ResearchRequest, ResearchResponse
+from app.services import discovery
 
 logger = structlog.get_logger(__name__)
 
@@ -31,13 +38,41 @@ class WebHunterClient:
         base_url: str | None = None,
         timeout: int | None = None,
     ):
-        self.base_url = (base_url or settings.webhunter_url).rstrip("/")
+        self.base_url = (base_url if base_url is not None else settings.webhunter_url).rstrip("/")
         self.timeout = timeout or settings.webhunter_timeout
 
-        if not self.base_url:
-            raise WebHunterError("WEBHUNTER_URL is not configured")
-
         self._client: httpx.AsyncClient | None = None
+        self._resolve_lock = asyncio.Lock()
+
+    def _candidates(self) -> list[str]:
+        return discovery._normalize_candidates(
+            settings.discovery_candidates_webhunter,
+            discovery.DEFAULT_WEBHUNTER_CANDIDATES,
+        )
+
+    async def resolve(self) -> str | None:
+        """Resolve and cache the upstream URL. Returns the URL or None."""
+        async with self._resolve_lock:
+            if self.base_url:
+                return self.base_url
+            url = await discovery.discover(
+                self._candidates(),
+                env_override=None,
+                timeout=settings.discovery_timeout_seconds,
+            )
+            if url:
+                self.base_url = url
+            return url
+
+    async def _ensure_base_url(self) -> str:
+        if self.base_url:
+            return self.base_url
+        url = await self.resolve()
+        if not url:
+            raise WebHunterError(
+                "WebHunter URL not configured and no candidate answered"
+            )
+        return url
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -71,8 +106,9 @@ class WebHunterClient:
             data WebHunter returned (sources, snippets, structured
             fields). Missing research_types are simply absent.
         """
+        base_url = await self._ensure_base_url()
         client = await self._get_client()
-        url = f"{self.base_url}/api/v1/scrape"
+        url = f"{base_url}/api/v1/scrape"
         log = logger.bind(url=url, types=research_types)
         log.info("webhunter_request")
 
@@ -103,6 +139,7 @@ class WebHunterClient:
                 f"WebHunter returned {e.response.status_code}: {e}"
             ) from e
         except httpx.RequestError as e:
+            self.base_url = ""
             log.error("webhunter_connection_error", error=str(e))
             raise WebHunterError(f"Cannot reach WebHunter: {e}") from e
         except ValueError as e:
