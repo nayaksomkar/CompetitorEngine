@@ -162,11 +162,15 @@ class WebHunterClient:
         base_url: str | None = None,
         timeout: int | None = None,
     ):
-        self.base_url = (base_url if base_url is not None else settings.webhunter_url).rstrip("/")
+        raw = base_url if base_url is not None else settings.webhunter_url
+        self.base_url = discovery.normalize_url(raw) if raw else ""
         self.timeout = timeout or settings.webhunter_timeout
 
         self._client: httpx.AsyncClient | None = None
         self._resolve_lock = asyncio.Lock()
+
+        if self.base_url:
+            logger.info("webhunter_url_configured", url=self.base_url)
 
     def _candidates(self) -> list[str]:
         return discovery._normalize_candidates(

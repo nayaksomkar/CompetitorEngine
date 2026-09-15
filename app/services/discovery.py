@@ -13,11 +13,38 @@ from __future__ import annotations
 
 import asyncio
 from typing import Iterable
+from urllib.parse import urlparse
 
 import httpx
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+class ServiceURL(ValueError):
+    """Raised when a configured service URL is malformed."""
+
+
+def normalize_url(raw: str) -> str:
+    """Return a clean base URL.
+
+    Strips whitespace and a single trailing slash. Validates that the
+    result has an http/https scheme and a non-empty host. Raises
+    ``ServiceURL`` on anything that is not a usable base URL so the
+    caller can fail fast instead of probing a garbage address.
+    """
+    url = raw.strip().rstrip("/")
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ServiceURL(
+            f"invalid scheme {parsed.scheme!r} in URL {raw!r} "
+            f"(expected http or https)"
+        )
+    if not parsed.hostname:
+        raise ServiceURL(f"missing host in URL {raw!r}")
+    return url
 
 
 # Built-in candidate order — first healthy wins.

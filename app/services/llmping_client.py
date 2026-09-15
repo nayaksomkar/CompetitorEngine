@@ -127,12 +127,16 @@ class LLMPingClient:
         timeout: int | None = None,
         api_key: str | None = None,
     ):
-        self.base_url = (base_url if base_url is not None else settings.llmping_url).rstrip("/")
+        raw = base_url if base_url is not None else settings.llmping_url
+        self.base_url = discovery.normalize_url(raw) if raw else ""
         self.timeout = timeout or settings.llmping_timeout
         self.api_key = api_key or settings.llmping_api_key
 
         self._client: httpx.AsyncClient | None = None
         self._resolve_lock = asyncio.Lock()
+
+        if self.base_url:
+            logger.info("llmping_url_configured", url=self.base_url)
 
     def _candidates(self) -> list[str]:
         """Build the candidate list for this client."""

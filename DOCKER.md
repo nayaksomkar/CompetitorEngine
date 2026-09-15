@@ -9,9 +9,16 @@ LLM analysis itself — it calls two sibling services:
 | webhunter   | `webhunter`          | **8765**  | 8000           | Web search / entity harvesting   |
 | competitorengine | `competitorengine:latest` | **8001** | 8001    | Orchestrator (this repo)         |
 
-> The orchestrator **refuses to start** unless both `LLMPING_URL` and
-> `WEBHUNTER_URL` are set. This is intentional — a misconfigured orchestrator is
-> worse than a failed one.
+> The orchestrator resolves upstream URLs in this order:
+>   1. Explicit `LLMPING_URL` / `WEBHUNTER_URL` env vars
+>   2. Docker DNS service names (`llmping:8000`, `webhunter:8000`)
+>   3. `host.docker.internal` fallbacks
+>   4. `localhost` fallbacks
+>
+> When an explicit URL is set, discovery probes are skipped entirely —
+> no local Docker addresses are tried. Set `REQUIRE_SERVICE_URLS=true`
+> to make the orchestrator fail fast if neither a URL nor a reachable
+> candidate is available.
 
 ## Prerequisites
 
@@ -95,23 +102,44 @@ docker rm -f competitorengine llmping webhunter
 
 | Variable          | Required | Default | Notes                                    |
 |-------------------|----------|---------|------------------------------------------|
-| `LLMPING_URL`     | yes      | —       | Full URL to the LLMPing service.         |
-| `WEBHUNTER_URL`   | yes      | —       | Full URL to the WebHunter service.       |
+| `LLMPING_URL`     | no       | —       | Full URL to LLMPing. When unset, auto-discovers via `host.docker.internal:8000` → `llmping:8000` → `localhost:8000`. Production: `https://llmping.onrender.com` |
+| `WEBHUNTER_URL`   | no       | —       | Full URL to WebHunter. When unset, auto-discovers via `host.docker.internal:8765` → `webhunter:8000` → `localhost:8765`. Production: `https://webhunter-1v83.onrender.com` |
 | `LLMPING_TIMEOUT` | no       | 60      | Seconds per LLMPing request.             |
 | `WEBHUNTER_TIMEOUT` | no     | 30      | Seconds per WebHunter request.           |
 | `LLMPING_API_KEY` | no       | —       | Sent as `Authorization: Bearer ...`.      |
+| `REQUIRE_SERVICE_URLS` | no | `false` | Set `true` to fail fast if neither URL nor candidate answers. Default allows auto-discovery. |
+| `DISCOVERY_CANDIDATES_LLMPING` | no | — | CSV of extra LLMPing candidates prepended before defaults |
+| `DISCOVERY_CANDIDATES_WEBHUNTER` | no | — | CSV of extra WebHunter candidates prepended before defaults |
 | `SERVICE_HOST`    | no       | 0.0.0.0 | Bind address inside the container.       |
-| `SERVICE_PORT`    | no       | 8001    | Must match the published port.          |
+| `SERVICE_PORT`    | no       | 8001    | Must match the published port.           |
 | `LOG_LEVEL`       | no       | INFO    | DEBUG / INFO / WARNING / ERROR.          |
+
+## Production (Render)
+
+On Render, set these env vars in the service dashboard to skip discovery
+and point directly at the deployed upstreams:
+
+```
+LLMPING_URL=https://llmping.onrender.com
+WEBHUNTER_URL=https://webhunter-1v83.onrender.com
+REQUIRE_SERVICE_URLS=true
+```
+
+With explicit URLs set, the orchestrator does **not** probe any local
+Docker addresses — it talks straight to the Render services.
 
 ## Troubleshooting
 
 **Container keeps restarting with `RuntimeError: LLMPING_URL is not set`**
-You forgot `-e LLMPING_URL=...` (and/or `WEBHUNTER_URL=...`). Pass both.
+You set `REQUIRE_SERVICE_URLS=true` (or are running with a build that
+defaults it on) and no URL was reachable. Either set `LLMPING_URL` /
+`WEBHUNTER_URL` explicitly, or set `REQUIRE_SERVICE_URLS=false` to allow
+auto-discovery to fall back to `localhost` / Docker DNS candidates.
 
 **`curl http://localhost:8765/` returns 404**
-That's expected if WebHunter doesn't expose a root route. Confirm via
-`docker logs webhunter` and the actual API path (e.g. `/search`, `/entities`).
+Expected — WebHunter may not expose a root route. Discovery treats any
+HTTP response as healthy. Confirm via `docker logs webhunter` and the actual
+API path (e.g. `/research/sync`).
 
 **Orchestrator can't reach `host.docker.internal` (Linux)**
 Use the `--add-host=host.docker.internal:host-gateway` flag shown above, or run
