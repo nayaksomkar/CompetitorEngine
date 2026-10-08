@@ -90,7 +90,11 @@ from app.schemas.output import (
     UIState,
 )
 from app.services.llmping_client import LLMPingClient, LLMPingError
-from app.services.webhunter_client import WebHunterClient, WebHunterError
+from app.services.webhunter_client import (
+    LOOKUP_HTTP_TIMEOUT_S,
+    WebHunterClient,
+    WebHunterError,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -149,12 +153,14 @@ _LOOKUP_LLM_DELAY_S = 0.5
 
 # Total wall-time budget for the WebHunter retry loop. Measured
 # legacy WebHunter latency: ~7s on fast transient failures,
-# ~29-50s on successful crawls. Retrying fast failures is cheap
+# ~27-50s on successful crawls. Retrying fast failures is cheap
 # and genuinely helps (upstream search flakiness is transient);
-# retrying 45s timeouts burns the request budget, so once the
-# budget is spent remaining retries are skipped and the entity
-# is reported partial instead of timing out the whole request.
-_LOOKUP_WH_BUDGET_S = 80.0
+# retrying slow timeouts burns the request budget, so once the
+# budget cannot fit another full attempt the remaining retries
+# are skipped and the entity is reported partial instead of
+# timing out the whole request. With LOOKUP_HTTP_TIMEOUT_S=60
+# this admits at most 2 real attempts (~121s worst case).
+_LOOKUP_WH_BUDGET_S = 130.0
 
 # Lookup budget: cap each request at 3 WebHunter searches so one
 # user message naming 3 new companies stays under the cap (§12).
@@ -1088,10 +1094,12 @@ class Orchestrator:
         loop_start = time.monotonic()
         for attempt in range(_LOOKUP_WH_RETRIES + 1):
             if attempt > 0 and (
-                time.monotonic() - loop_start > _LOOKUP_WH_BUDGET_S
+                time.monotonic() - loop_start + LOOKUP_HTTP_TIMEOUT_S
+                > _LOOKUP_WH_BUDGET_S
             ):
-                # Budget spent — remaining retries would push the
-                # request past platform limits. Report what failed.
+                # Budget cannot fit another full attempt — remaining
+                # retries would push the request past platform
+                # limits. Report what failed instead.
                 log.warning(
                     "lookup_webhunter_budget_exhausted",
                     attempts_left=_LOOKUP_WH_RETRIES - attempt + 1,
@@ -1243,17 +1251,25 @@ class Orchestrator:
         while i < len(tokens):
             if (
                 tokens[i][0].isupper()
-                and tokens[i].lower() not in _MESSAGE_STOPWORDS
+                and tokens[i].lower().rstrip(".,;:!?")
+                not in _MESSAGE_STOPWORDS
             ):
                 j = i
                 while (
                     j + 1 < len(tokens)
                     and tokens[j + 1][0].isupper()
-                    and tokens[j + 1].lower() not in _MESSAGE_STOPWORDS
+                    and tokens[j + 1].lower().rstrip(".,;:!?")
+                    not in _MESSAGE_STOPWORDS
                 ):
                     j += 1
                 if i > 0:  # skip sentence-initial words
-                    candidate = " ".join(tokens[i : j + 1])
+                    # Strip sentence punctuation riding on the
+                    # last token ("Spotify." → "Spotify") so the
+                    # WebHunter query and relevance needle stay
+                    # clean.
+                    candidate = " ".join(tokens[i : j + 1]).rstrip(
+                        ".,;:!?"
+                    )
                     if 2 <= len(candidate) <= 60 and candidate not in mentions:
                         mentions.append(candidate)
                 i = j + 1

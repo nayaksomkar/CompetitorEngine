@@ -319,14 +319,15 @@ class WebHunterClient:
         }
         log.info("webhunter_company_search", query_chars=len(query))
 
-        # Successful lookups were observed to take 27-43s end to
-        # end (WebHunter crawls synchronously). The default 30s
-        # client timeout truncated real successful responses, so
-        # the lookup path allows 45s per attempt; retries stay
-        # bounded by the orchestrator's §7.1 policy.
+        # Successful lookups were measured at 27-50s end to end
+        # (WebHunter crawls synchronously; latency drifts between
+        # runs). The default 30s client timeout truncated real
+        # successful responses, so the lookup path allows 60s per
+        # attempt; total retries stay bounded by the orchestrator's
+        # §7.1 budget.
         try:
             response = await client.post(
-                url, json=body, timeout=_LOOKUP_HTTP_TIMEOUT_S
+                url, json=body, timeout=LOOKUP_HTTP_TIMEOUT_S
             )
             response.raise_for_status()
             data = response.json() if response.content else {}
@@ -370,7 +371,9 @@ class WebHunterClient:
 
 
 # Per-attempt HTTP timeout for company lookups (see search_company).
-_LOOKUP_HTTP_TIMEOUT_S = 45
+# Measured successful-crawl latencies: 27-50s; 60s covers the
+# observed maximum with margin without unbounding the request.
+LOOKUP_HTTP_TIMEOUT_S = 60
 
 # §5.1 query templates — the orchestrator picks the one that
 # matches the user's requested metric so the question ("what is

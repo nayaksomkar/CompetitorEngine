@@ -765,6 +765,19 @@ def test_requested_metric_gap_unknown_pricing_tier():
     assert gap.field == "pricingTier"
 
 
+# ── Entity mention extraction ─────────────────────────
+def test_mentions_strip_sentence_punctuation():
+    """'Tell me about Spotify.' must extract 'Spotify', not
+    'Spotify.' — a trailing period pollutes the WebHunter
+    query and the relevance needle."""
+    orch = Orchestrator.__new__(Orchestrator)
+    mentions = orch._extract_company_mentions(
+        "Tell me about Spotify.", None, None
+    )
+    assert "Spotify" in mentions
+    assert not any(m.endswith(".") for m in mentions)
+
+
 def test_color_for_is_deterministic():
     assert Orchestrator._color_for("CompA") == (
         Orchestrator._color_for("CompA")
