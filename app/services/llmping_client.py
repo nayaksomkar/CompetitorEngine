@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 import httpx
@@ -80,6 +81,68 @@ def _build_query(payload: dict[str, Any]) -> str:
             f'"wants_visualizations": <bool>}}.\n\n'
             f"User message: {message}\n\n"
             f"Context: {ctx_brief}"
+        )
+
+    if task == "extract_profile":
+        # §5.1: extract a strict competitor profile from WebHunter
+        # sources. The reply must be JSON matching the extraction
+        # schema so the orchestrator can validate confidence/sourceCount.
+        company = payload.get("company_name") or "the company"
+        industry = payload.get("industry") or ""
+        sources = payload.get("sources") or []
+        source_lines = []
+        for s in sources[:5]:  # token budget: top 5 sources only (§12)
+            if isinstance(s, dict):
+                title = s.get("title") or ""
+                snippet = s.get("snippet") or ""
+                url = s.get("url") or ""
+                source_lines.append(f"- {title}: {snippet} ({url})")
+            elif isinstance(s, str):
+                source_lines.append(f"- {s}")
+        source_block = "\n".join(source_lines) or "(no sources)"
+        return (
+            f"Extract a competitor profile for {company}"
+            f" (industry: {industry}) from these web sources. "
+            f"Reply with JSON only, no markdown, exactly this shape: "
+            f'{{"name": "{company}", "description": "1-2 sentence summary", '
+            f'"pricingTier": "Premium|Mid-range|Budget|Ultra-Premium|unknown", '
+            f'"marketPosition": "Leader|Challenger|Niche|Emerging|unknown", '
+            f'"marketShare": <number or null>, '
+            f'"growthRate": <number or null>, '
+            f'"funding": "string or null", "founded": "string or null", '
+            f'"hq": "string or null", '
+            f'"strengths": ["up to 3"], "weaknesses": ["up to 3"], '
+            f'"confidence": <0-100>, "sourceCount": <int>}}.\n\n'
+            f"Sources:\n{source_block}"
+        )
+
+    if task == "explain":
+        question = payload.get("question") or ""
+        ctx = payload.get("current_context") or {}
+        ctx_brief = json.dumps(ctx, default=str)[:1500]
+        return (
+            f"Explain the answer to this question based on the context. "
+            f"Reply with JSON only, no markdown, exactly this shape: "
+            f'{{"explanation": "clear explanation", '
+            f'"evidence": [{{"label": "short label", "detail": "supporting detail"}}]}}.\n\n'
+            f"Question: {question}\n\n"
+            f"Context: {ctx_brief}"
+        )
+
+    if task == "compare":
+        entities = payload.get("entities") or []
+        names = ", ".join(
+            e.get("name", "") if isinstance(e, dict) else str(e)
+            for e in entities
+        )
+        ctx = payload.get("current_context") or {}
+        entity_block = json.dumps(entities, default=str)[:1500]
+        return (
+            f"Compare these competitors and write a short comparison "
+            f"summary: {names}. Reply with plain text (2-4 sentences), "
+            f"grounded in the context below, no invented facts.\n\n"
+            f"Entities: {entity_block}\n\n"
+            f"Context: {json.dumps(ctx, default=str)[:800]}"
         )
 
     # Default: answer_question. Prefer a user message, append any
@@ -246,3 +309,96 @@ class LLMPingClient:
         except ValueError as e:
             log.error("llmping_invalid_json", error=str(e))
             raise LLMPingError(f"LLMPing returned non-JSON: {e}") from e
+
+    # ── Structured task helpers (§5.1) ───────────────
+    async def extract_profile(
+        self,
+        company_name: str,
+        industry: str,
+        sources: list[dict[str, Any]],
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Extract a strict competitor profile (§5.1 schema).
+
+        Sends the WebHunter sources to LLMPing and parses the
+        JSON profile from the reply. Raises LLMPingError when
+        the reply cannot be parsed as the extraction schema.
+        """
+        reply = await self.chat(
+            {
+                "task": "extract_profile",
+                "company_name": company_name,
+                "industry": industry,
+                "sources": sources,
+                "session_id": session_id or "",
+            }
+        )
+        return _parse_json_reply(
+            reply.get("answer") or "", what="profile"
+        )
+
+    async def explain(
+        self,
+        question: str,
+        current_context: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Explain a data point (ORCHESTRATOR.md §5.2 explain)."""
+        reply = await self.chat(
+            {
+                "task": "explain",
+                "question": question,
+                "current_context": current_context or {},
+                "session_id": session_id or "",
+            }
+        )
+        return _parse_json_reply(
+            reply.get("answer") or "", what="explanation"
+        )
+
+    async def compare(
+        self,
+        entities: list[dict[str, Any]],
+        current_context: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> str:
+        """Synthesize a comparison summary over resolved entities."""
+        reply = await self.chat(
+            {
+                "task": "compare",
+                "entities": entities,
+                "current_context": current_context or {},
+                "session_id": session_id or "",
+            }
+        )
+        return str(reply.get("answer") or "").strip()
+
+
+def _parse_json_reply(text: str, *, what: str) -> dict[str, Any]:
+    """Parse a JSON object from an LLMPing free-text reply.
+
+    LLMPing may wrap JSON in prose or markdown fences, so we
+    try a direct parse first and fall back to the first
+    balanced {...} block. Raises LLMPingError when no JSON
+    object can be recovered — the orchestrator's retry and
+    fallback policy then applies.
+    """
+    raw = (text or "").strip()
+    if raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+        except ValueError:
+            pass
+        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group(0))
+                if isinstance(data, dict):
+                    return data
+            except ValueError:
+                pass
+    raise LLMPingError(
+        f"LLMPing reply did not contain a parseable {what} JSON object"
+    )

@@ -295,7 +295,8 @@ async def test_parser_bootstrap_reports_missing_data():
 # ── Question / follow-up tests ──────────────────────────────
 @pytest.mark.asyncio
 async def test_parser_question_returns_answer():
-    """Question intent should return a chat-style answer."""
+    """Question intent about an in-context company answers
+    from context (no WebHunter calls)."""
     chat_response = {
         "needs_research": False,
         "research_plan": [],
@@ -312,12 +313,23 @@ async def test_parser_question_returns_answer():
         make_parser_input(
             intent="question",
             message="Tell me about CompA",
-            current_analysis={"profile": {"business_name": "TestCo"}},
+            current_analysis={
+                "competitors": [
+                    {"id": "compa", "name": "CompA", "description": "Established"}
+                ],
+                "profile": {"business_name": "TestCo"},
+            },
         )
     )
     assert isinstance(result, ParserOutput)
     assert result.intent == "question"
-    assert result.data.business_summary == "CompA is strong because..."
+    assert result.answer is not None
+    assert result.answer.summary == "CompA is strong because..."
+    # In-context entity is surfaced as a lookup card.
+    assert result.answer.competitors[0].name == "CompA"
+    assert result.answer.competitors[0].source == "context"
+    # No fresh lookups were needed.
+    webhunter.search_company.assert_not_called()
 
 
 # ── Failure isolation tests ─────────────────────────────────
@@ -428,15 +440,10 @@ async def test_parser_partial_status_when_some_data_missing():
 # ── Compare intent tests ────────────────────────────────────
 @pytest.mark.asyncio
 async def test_parser_compare_returns_comparison():
-    """Compare intent should return comparison data."""
-    chat_response = {
-        "needs_research": False,
-        "research_plan": [],
-        "wants_visualizations": False,
-    }
-    answer_response = {"answer": "Here is the comparison...", "sources": []}
+    """Compare intent resolves named entities and returns
+    a side-by-side answer block."""
     llmping = AsyncMock(spec=LLMPingClient)
-    llmping.chat = AsyncMock(side_effect=[chat_response, answer_response])
+    llmping.compare = AsyncMock(return_value="Here is the comparison...")
     webhunter = AsyncMock(spec=WebHunterClient)
     webhunter.research = AsyncMock(return_value={})
     orch = Orchestrator(llmping=llmping, webhunter=webhunter)
@@ -445,25 +452,34 @@ async def test_parser_compare_returns_comparison():
         make_parser_input(
             intent="compare",
             message="Compare CompA and CompB",
+            current_analysis={
+                "competitors": [
+                    {"id": "compa", "name": "CompA", "description": "Established"},
+                    {"id": "compb", "name": "CompB", "description": "Growing"},
+                ],
+            },
         )
     )
     assert isinstance(result, ParserOutput)
     assert result.intent == "compare"
-    assert result.data.business_summary == "Here is the comparison..."
+    assert result.answer is not None
+    assert result.answer.summary == "Here is the comparison..."
+    assert result.answer.competitors[0].name == "CompA"
+    assert result.answer.comparedTo[0].name == "CompB"
+    assert result.answer.competitors[0].source == "context"
 
 
 # ── Explain intent tests ────────────────────────────────────
 @pytest.mark.asyncio
 async def test_parser_explain_returns_explanation():
-    """Explain intent should return an explanation."""
-    chat_response = {
-        "needs_research": False,
-        "research_plan": [],
-        "wants_visualizations": False,
-    }
-    answer_response = {"answer": "This matters because...", "sources": []}
+    """Explain intent returns an explanation + evidence."""
     llmping = AsyncMock(spec=LLMPingClient)
-    llmping.chat = AsyncMock(side_effect=[chat_response, answer_response])
+    llmping.explain = AsyncMock(
+        return_value={
+            "explanation": "This matters because...",
+            "evidence": [{"label": "Share", "detail": "40% of market"}],
+        }
+    )
     webhunter = AsyncMock(spec=WebHunterClient)
     webhunter.research = AsyncMock(return_value={})
     orch = Orchestrator(llmping=llmping, webhunter=webhunter)
@@ -476,7 +492,10 @@ async def test_parser_explain_returns_explanation():
     )
     assert isinstance(result, ParserOutput)
     assert result.intent == "explain"
-    assert result.data.business_summary == "This matters because..."
+    assert result.answer is not None
+    assert result.answer.question == "Why is CompA a leader?"
+    assert result.answer.explanation == "This matters because..."
+    assert result.answer.evidence[0].label == "Share"
 
 
 # ── Regenerate intent tests ─────────────────────────────────

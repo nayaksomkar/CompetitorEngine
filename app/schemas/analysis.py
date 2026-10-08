@@ -1,17 +1,23 @@
-from typing import TYPE_CHECKING, Any
+"""Parser contract schemas (PARSER.md §5–§7, ORCHESTRATOR.md §4).
+
+ParserInput is what the UI sends to /api/v1/parser/execute.
+ContextUpdate is the compact session context the UI stores in
+sessionStorage and echoes back on every follow-up.
+"""
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from app.schemas.business import FormInput
+from app.schemas.domain import SWOT
 
 
-# ── Parser contract schemas (PARSER.md) ─────────────────────
+# ── Parser input (ORCHESTRATOR.md §4.2) ──────────────────
 class ParserInput(BaseModel):
-    """Structured input from the parser.
+    """Structured input from the parser / UI.
 
-    The parser's output becomes the orchestrator's input. This
-    carries intent, extracted entities, facts, constraints, and
-    the original business data when available.
+    The UI sends `{ parser_input: {...} }`. The orchestrator
+    owns all routing decisions from here.
     """
 
     intent: str = Field(
@@ -21,6 +27,30 @@ class ParserInput(BaseModel):
             "regenerate, follow-up"
         ),
     )
+    message: str = Field(
+        default="",
+        description="User's natural-language request (question/compare/explain/refine)",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Stable session identifier (UI-generated UUID)",
+    )
+    context_update: dict[str, Any] | None = Field(
+        default=None,
+        description="Last context_update from a previous response (from sessionStorage)",
+    )
+    current_analysis: dict[str, Any] | None = Field(
+        default=None,
+        description="Last full data payload (for rich follow-ups)",
+    )
+    form_input: FormInput | None = Field(
+        default=None,
+        description="Bootstrap questionnaire payload (bootstrap/refine/regenerate)",
+    )
+    requested_count: int = Field(
+        default=3, ge=1, le=3, description="Max competitors (1-3)"
+    )
+    # Parser-extracted semantic payloads (optional, for rich requests)
     entities: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -29,12 +59,10 @@ class ParserInput(BaseModel):
         ),
     )
     facts: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Extracted facts about the business",
+        default_factory=dict, description="Extracted facts about the business"
     )
     constraints: list[str] = Field(
-        default_factory=list,
-        description="Active constraints from context",
+        default_factory=list, description="Active constraints from context"
     )
     requested_operations: list[str] = Field(
         default_factory=list,
@@ -44,28 +72,14 @@ class ParserInput(BaseModel):
         ),
     )
     missing_information: list[str] = Field(
-        default_factory=list,
-        description="Fields the parser couldn't extract",
+        default_factory=list, description="Fields the parser couldn't extract"
     )
     confidence: dict[str, float] = Field(
-        default_factory=dict,
-        description="Confidence scores for extracted values",
-    )
-    # Original business data (required for bootstrap/refine)
-    form_input: FormInput | None = None
-    # Context from previous interactions
-    context: dict[str, Any] | None = None
-    # Session/chat fields
-    session_id: str | None = None
-    message: str = ""
-    current_analysis: dict[str, Any] | None = None
-    fresh_research: dict[str, Any] | None = None
-    # Requested competitor count for dynamic data (max 3).
-    requested_count: int = Field(
-        default=3, ge=1, le=3, description="Max competitors (1-3)"
+        default_factory=dict, description="Confidence scores for extracted values"
     )
 
 
+# ── Per-entity status (ORCHESTRATOR.md §6.3, PARSER.md §4.4) ──
 class EntityStatus(BaseModel):
     """Per-entity status for fault-tolerant rendering."""
 
@@ -73,8 +87,11 @@ class EntityStatus(BaseModel):
     name: str = ""
     status: str = "complete"  # complete, partial, loading, failed
     missing_fields: list[str] = Field(default_factory=list)
+    source: str = ""  # "web" | "context"
+    lookupConfidence: int | None = None  # 0-100, web-looked-up entities
 
 
+# ── Missing data report (ORCHESTRATOR.md §7.3) ───────────
 class MissingData(BaseModel):
     """Description of data that could not be obtained."""
 
@@ -83,17 +100,38 @@ class MissingData(BaseModel):
     severity: str = "warning"  # critical, warning, info
 
 
+# ── Context update (PARSER.md §7.2, ORCHESTRATOR.md §8.2) ─
 class ContextUpdate(BaseModel):
-    """Compact context update for the parser to store."""
+    """Compact context the UI stores in sessionStorage.
+
+    Key: 'competitor_analysis_context'. Echoed back with every
+    follow-up request. Never stores conversation history, full
+    analysis payloads, or chart data (PARSER.md §7.4).
+    """
 
     version: int = 1
-    business: dict[str, Any] = Field(default_factory=dict)
-    entities: dict[str, Any] = Field(default_factory=dict)
-    result_meta: dict[str, Any] = Field(default_factory=dict)
-    constraints: dict[str, Any] = Field(default_factory=dict)
-    keywords: list[str] = Field(default_factory=list)
+    business: dict[str, Any] = Field(
+        default_factory=dict,
+        description="{name, industry, pricing, model}",
+    )
+    entities: dict[str, Any] = Field(
+        default_factory=dict,
+        description="{competitors: [slug], products: [slug], focus: slug|null}",
+    )
+    result_meta: dict[str, Any] = Field(
+        default_factory=dict,
+        description="{requested_count, retrieved_count, filters: []}",
+    )
+    constraints: dict[str, Any] = Field(
+        default_factory=dict,
+        description="{included: [], excluded: []}",
+    )
+    keywords: list[str] = Field(
+        default_factory=list, description="5-10 compact keyword tags"
+    )
 
 
+# ── Result counts (ORCHESTRATOR.md §6.1) ─────────────────
 class ResultCounts(BaseModel):
     """Counts of requested/retrieved/valid/displayed entities."""
 
@@ -103,30 +141,8 @@ class ResultCounts(BaseModel):
     displayed: int = 0
 
 
-class CompetitorCard(BaseModel):
-    name: str
-    description: str = ""
-    strengths: list[str] = Field(default_factory=list)
-    weaknesses: list[str] = Field(default_factory=list)
-    pricing: str = ""
-    market_position: str = ""
-    source: str = ""
-    explanation: str = Field("", description="Why this competitor matters to the user")
-
-
-class SWOTItem(BaseModel):
-    point: str
-    explanation: str = ""
-    source: str = ""
-
-
-class SWOTAnalysis(BaseModel):
-    strengths: list[SWOTItem] = Field(default_factory=list)
-    weaknesses: list[SWOTItem] = Field(default_factory=list)
-    opportunities: list[SWOTItem] = Field(default_factory=list)
-    threats: list[SWOTItem] = Field(default_factory=list)
-
-
+# ── Comparison (ORCHESTRATOR.md §6.1 `comparisons` field;
+#    element shape not documented — kept from the legacy contract) ──
 class ComparisonRow(BaseModel):
     feature: str
     values: dict[str, str]  # {entity_name: value}
@@ -139,38 +155,7 @@ class ComparisonTable(BaseModel):
     explanation: str = ""
 
 
-class Insight(BaseModel):
-    title: str
-    description: str
-    importance: str = "medium"  # low, medium, high
-    source: str = ""
-    explanation: str = ""
-
-
-class Recommendation(BaseModel):
-    title: str
-    description: str
-    priority: str = "medium"  # low, medium, high
-    rationale: str = ""
-    explanation: str = ""
-
-
-class ChartData(BaseModel):
-    chart_type: str  # bar, line, pie, radar, scatter
-    title: str
-    labels: list[str] = Field(default_factory=list)
-    datasets: list[dict] = Field(default_factory=list)
-    explanation: str = ""
-
-
-class ActionItem(BaseModel):
-    action: str
-    timeline: str = ""  # e.g., "Week 1-2", "Month 1"
-    priority: str = "medium"
-    expected_outcome: str = ""
-    explanation: str = ""
-
-
+# ── Parser research-plan vocabulary (PARSER.md §5 Step 6) ─
 class ResearchStep(BaseModel):
     name: str
     research_type: str
@@ -181,3 +166,18 @@ class ResearchStep(BaseModel):
 class ResearchPlan(BaseModel):
     steps: list[ResearchStep] = Field(default_factory=list)
     reasoning: str = ""
+
+
+# Re-exported for callers that build form payloads.
+__all__ = [
+    "ParserInput",
+    "EntityStatus",
+    "MissingData",
+    "ContextUpdate",
+    "ResultCounts",
+    "ComparisonRow",
+    "ComparisonTable",
+    "ResearchStep",
+    "ResearchPlan",
+    "SWOT",
+]

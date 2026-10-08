@@ -145,3 +145,39 @@ def test_chat_endpoint(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["session_id"] == "abc-123"
+
+
+def test_parser_execute_endpoint(client):
+    """The parser endpoint returns the full §6.1
+    envelope: data + context_update + result_counts +
+    entity_statuses + derived_data + ui_state."""
+    resp = client.post(
+        "/api/v1/parser/execute",
+        json={
+            "parser_input": {
+                "intent": "bootstrap",
+                "requested_count": 3,
+                "form_input": {
+                    "business_name": "TestCo",
+                    "idea": "AI analytics",
+                    "industry": "SaaS",
+                },
+            }
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["intent"] == "bootstrap"
+    assert data["status"] in ("success", "partial")
+    assert data["result_counts"]["requested"] == 3
+    assert "competitors" in data["entity_statuses"]
+    assert data["context_update"] is not None
+    assert data["context_update"]["business"]["name"] == "TestCo"
+    assert "derived_data" in data
+    assert "ui_state" in data
+
+
+def test_health_endpoint(client):
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"

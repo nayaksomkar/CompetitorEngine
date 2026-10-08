@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -278,3 +279,119 @@ class WebHunterClient:
             raise WebHunterError(
                 f"WebHunter returned non-JSON: {e}"
             ) from e
+
+    # ── Per-company lookup (ORCHESTRATOR.md §5.1) ──
+    async def search_company(
+        self,
+        company: str,
+        industry: str = "",
+        max_results: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Search the web for a single company profile.
+
+        Uses the §5.1 query template and returns the top
+        sources (up to 5, deduplicated by domain) as
+        `{url, title, snippet}` dicts. Raises WebHunterError
+        on transport failures so the orchestrator's retry
+        policy applies; an empty list means "no results".
+        """
+        base_url = await self._ensure_base_url()
+        client = await self._get_client()
+        url = f"{base_url}/research/sync"
+
+        query = _company_query(company, industry)
+        log = logger.bind(url=url, company=company)
+        body = {"query": query, "max_results": max_results}
+        log.info("webhunter_company_search", query_chars=len(query))
+
+        try:
+            response = await client.post(url, json=body)
+            response.raise_for_status()
+            data = response.json() if response.content else {}
+            log.info(
+                "webhunter_company_response",
+                status=response.status_code,
+            )
+            if data.get("status") == "failed" or data.get("error"):
+                log.warning(
+                    "webhunter_company_failed",
+                    error=data.get("error"),
+                )
+                return []
+            return _dedupe_sources(
+                data.get("search_results") or []
+            )
+        except httpx.TimeoutException as e:
+            log.error("webhunter_company_timeout", error=str(e))
+            raise WebHunterError(f"WebHunter timeout: {e}") from e
+        except httpx.HTTPStatusError as e:
+            log.error(
+                "webhunter_company_http_error",
+                status=e.response.status_code,
+                error=str(e),
+            )
+            raise WebHunterError(
+                f"WebHunter returned {e.response.status_code}: {e}"
+            ) from e
+        except httpx.RequestError as e:
+            self.base_url = ""
+            log.error("webhunter_company_error", error=str(e))
+            raise WebHunterError(f"Cannot reach WebHunter: {e}") from e
+        except ValueError as e:
+            log.error("webhunter_company_invalid_json", error=str(e))
+            raise WebHunterError(
+                f"WebHunter returned non-JSON: {e}"
+            ) from e
+
+
+# §5.1 query templates — the orchestrator picks the best
+# one for the user's industry context; the profile
+# template is the default for company lookups.
+_COMPANY_QUERY_TEMPLATES = (
+    "{company} company profile {industry}",
+    "{company} pricing {industry}",
+    "{company} competitors market share",
+    "{company} funding headquarters",
+)
+
+
+def _company_query(company: str, industry: str = "") -> str:
+    """Build the §5.1 lookup query for a company."""
+    template = _COMPANY_QUERY_TEMPLATES[0]
+    return template.format(
+        company=company, industry=industry or "the industry"
+    ).strip()
+
+
+def _dedupe_sources(
+    search_results: list[Any],
+    keep: int = 5,
+) -> list[dict[str, Any]]:
+    """Keep the top `keep` results, deduplicated by domain.
+
+    WebHunter returns up to 8 results in relevance order;
+    §5.1 keeps the top 5 by relevance with domains
+    deduplicated.
+    """
+    out: list[dict[str, Any]] = []
+    seen_domains: set[str] = set()
+    for r in search_results:
+        if not isinstance(r, dict):
+            continue
+        url = r.get("url") or ""
+        if not url:
+            continue
+        domain = urlparse(url).hostname or url
+        if domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        out.append(
+            {
+                "url": url,
+                "title": r.get("title") or "",
+                "snippet": r.get("snippet") or "",
+            }
+        )
+        if len(out) >= keep:
+            break
+    return out
