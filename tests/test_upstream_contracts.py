@@ -535,6 +535,36 @@ async def test_webhunter_search_company_relevance_first():
 
 
 @pytest.mark.asyncio
+async def test_webhunter_search_company_bounds_zero_match_junk():
+    """When NO result mentions the company, only a small head
+    sample is passed downstream — WebHunter provably returns
+    unrelated results on name collisions, and junk must not be
+    treated as evidence."""
+    app = FastAPI()
+
+    @app.post("/research/sync")
+    async def sync(payload: dict):
+        return {
+            "status": "completed",
+            "search_results": [
+                {"url": f"https://junk{i}.com/x", "title": f"J{i}",
+                 "snippet": "unrelated"}
+                for i in range(6)
+            ],
+        }
+
+    transport = httpx.ASGITransport(app=app)
+    client = httpx.AsyncClient(
+        transport=transport, base_url="http://fake-upstream"
+    )
+    wh = WebHunterClient(base_url="http://fake-upstream")
+    wh._client = client
+    sources = await wh.search_company("Fragante", "Fragrance")
+    await client.aclose()
+    assert len(sources) == 2
+
+
+@pytest.mark.asyncio
 async def test_webhunter_search_company_raises_on_upstream_failed():
     """An upstream-reported failure must raise (so the
     orchestrator's retry policy applies), not return []."""

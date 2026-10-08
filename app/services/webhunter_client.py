@@ -407,9 +407,14 @@ def _dedupe_sources(
     keeps the top 5 by relevance with domains deduplicated.
     Results whose title/snippet/url mention the requested
     company are preferred (a result is not evidence merely
-    because WebHunter returned it), but non-matching results
-    are kept afterward rather than dropped so partially
-    relevant evidence survives.
+    because WebHunter returned it). When NO result mentions the
+    company, only the top 2 are kept: WebHunter's search
+    provably returns unrelated results on name collisions
+    (e.g. "Fragante" is a Spanish/Portuguese word), and a
+    bounded sample of its head relevance order is the most
+    that can be passed downstream without treating junk as
+    evidence. Partially relevant evidence is preserved either
+    way.
     """
     needle = (company or "").strip().lower()
 
@@ -441,5 +446,13 @@ def _dedupe_sources(
         }
         (relevant if _mentions_company(item) else other).append(item)
 
-    out = relevant + other
+    if relevant:
+        out = relevant + other
+    elif needle:
+        # No name match anywhere — WebHunter's results are at
+        # best tangential; keep a small head sample only.
+        out = other[:2]
+    else:
+        # No company to match against — trust relevance order.
+        out = other
     return out[:keep]
