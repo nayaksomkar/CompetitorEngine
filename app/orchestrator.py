@@ -181,7 +181,20 @@ _MESSAGE_STOPWORDS = {
     "companies", "company", "in", "this", "that", "these", "those",
     "it", "its", "list", "a", "an", "please", "show", "for", "with",
     "between", "my", "our", "your", "their", "i", "we", "you", "they",
+    # Analysis-vocabulary words: request shape, not entity names
+    # ("give me a SWOT analysis of X" must not look up "SWOT"
+    # or "Analysis" as companies).
+    "swot", "analysis", "overview", "profile", "comparison",
+    "insights", "insight", "report", "reports", "summary",
+    "breakdown", "benchmark", "benchmarks", "review", "data",
 }
+
+# Pure all-caps tokens at or below this length are treated as
+# acronyms (SWOT, KPI, ROI), not company names, unless they are
+# already known entities in the session context. Known all-caps
+# companies (IBM, SAP) still resolve via the context/known-name
+# extraction paths above.
+_ACRONYM_MAX_LEN = 5
 
 # Metric hints: "what is the market share of X" must research
 # market share, not a generic profile (§7 question alignment).
@@ -1246,20 +1259,38 @@ class Orchestrator:
         # 4. Proper-noun sequences: runs of capitalized words that
         #    are not sentence-initial (avoids "Tell"/"What" false
         #    positives) and not stopwords.
+        known = {
+            n.lower()
+            for n in self._known_competitor_names(current_analysis)
+        } | {
+            s.lower()
+            for s in self._context_slugs(context_update)
+        }
+
+        def _is_company_token(token: str) -> bool:
+            """A capitalized token names an entity unless it is a
+            stopword or a short all-caps acronym (SWOT, KPI) that
+            is not a known entity."""
+            lowered = token.lower().rstrip(".,;:!?")
+            if lowered in _MESSAGE_STOPWORDS:
+                return False
+            if (
+                token.isupper()
+                and len(token.rstrip(".,;:!?")) <= _ACRONYM_MAX_LEN
+                and lowered not in known
+            ):
+                return False
+            return True
+
         tokens = re.findall(r"[A-Za-z][A-Za-z0-9&.'-]*", text)
         i = 0
         while i < len(tokens):
-            if (
-                tokens[i][0].isupper()
-                and tokens[i].lower().rstrip(".,;:!?")
-                not in _MESSAGE_STOPWORDS
-            ):
+            if tokens[i][0].isupper() and _is_company_token(tokens[i]):
                 j = i
                 while (
                     j + 1 < len(tokens)
                     and tokens[j + 1][0].isupper()
-                    and tokens[j + 1].lower().rstrip(".,;:!?")
-                    not in _MESSAGE_STOPWORDS
+                    and _is_company_token(tokens[j + 1])
                 ):
                     j += 1
                 if i > 0:  # skip sentence-initial words

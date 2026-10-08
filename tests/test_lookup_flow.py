@@ -778,6 +778,31 @@ def test_mentions_strip_sentence_punctuation():
     assert not any(m.endswith(".") for m in mentions)
 
 
+def test_mentions_skip_analysis_vocabulary():
+    """'Give me a SWOT analysis of Fragante' must extract
+    'Fragante' only — 'SWOT' and 'Analysis' are request-shape
+    words, not companies, and must not burn lookup budget."""
+    orch = Orchestrator.__new__(Orchestrator)
+    mentions = orch._extract_company_mentions(
+        "Give me a SWOT analysis of Fragante", None, None
+    )
+    assert "Fragante" in mentions
+    assert "SWOT" not in mentions
+    assert "Analysis" not in mentions
+
+
+def test_mentions_known_allcaps_entity_resolves():
+    """An all-caps company already known from the current
+    analysis (IBM) is still extracted — the acronym filter
+    only applies to unknown tokens."""
+    orch = Orchestrator.__new__(Orchestrator)
+    current = {"competitors": [{"id": "ibm", "name": "IBM"}]}
+    mentions = orch._extract_company_mentions(
+        "tell me about IBM", None, current
+    )
+    assert "IBM" in mentions
+
+
 def test_color_for_is_deterministic():
     assert Orchestrator._color_for("CompA") == (
         Orchestrator._color_for("CompA")
