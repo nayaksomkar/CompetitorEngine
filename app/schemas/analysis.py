@@ -4,12 +4,45 @@ ParserInput is what the UI sends to /api/v1/parser/execute.
 ContextUpdate is the compact session context the UI stores in
 sessionStorage and echoes back on every follow-up.
 """
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from app.schemas.business import FormInput
 from app.schemas.domain import SWOT
+
+
+ActionId = Literal[
+    "explain_context",
+    "show_pricing",
+    "show_market_position",
+    "show_weaknesses",
+    "show_strengths",
+    "show_sources",
+    "compare_competitors",
+    "show_market_share",
+    "show_growth",
+    "show_market_gap",
+    "show_supporting_data",
+    "explain_trend",
+    "show_price_gaps",
+    "explain_premium_positioning",
+    "show_affected_competitors",
+    "explain_opportunity",
+    "show_supporting_evidence",
+    "explore_related_products",
+    "explore_implications",
+    "show_underlying_data",
+]
+
+
+class StructuredAction(BaseModel):
+    """Allowlisted contextual action emitted by the dashboard."""
+
+    action: ActionId
+    entity: str
+    section: str
+    target: str | None = None
 
 
 # ── Parser input (ORCHESTRATOR.md §4.2) ──────────────────
@@ -42,6 +75,10 @@ class ParserInput(BaseModel):
     current_analysis: dict[str, Any] | None = Field(
         default=None,
         description="Last full data payload (for rich follow-ups)",
+    )
+    action: StructuredAction | None = Field(
+        default=None,
+        description="Allowlisted contextual action from the dashboard",
     )
     form_input: FormInput | None = Field(
         default=None,
@@ -179,5 +216,6 @@ __all__ = [
     "ComparisonTable",
     "ResearchStep",
     "ResearchPlan",
+    "StructuredAction",
     "SWOT",
 ]

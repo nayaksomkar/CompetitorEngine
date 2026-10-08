@@ -190,6 +190,7 @@ async def test_webhunter_wire_payload_has_query_and_max_results():
             "industry": "Fragrance",
             "geography": "India",
             "pricing": "₹3500",
+            "competitors": ["Zoho Creator", "ClickUp", "Fieldproxy"],
         },
         research_types=["competitor_research", "pricing_research"],
     )
@@ -203,6 +204,9 @@ async def test_webhunter_wire_payload_has_query_and_max_results():
     assert payload["max_results"] > 0
     # Query mentions the brand + at least one topic.
     assert "Scentra" in payload["query"]
+    assert all(name in payload["query"] for name in [
+        "Zoho Creator", "ClickUp", "Fieldproxy",
+    ])
     q_lower = payload["query"].lower()
     assert "competitor" in q_lower or "pricing" in q_lower
 

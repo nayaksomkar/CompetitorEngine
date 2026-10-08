@@ -161,6 +161,7 @@ _LOOKUP_LLM_DELAY_S = 0.5
 # timing out the whole request. With LOOKUP_HTTP_TIMEOUT_S=60
 # this admits at most 2 real attempts (~121s worst case).
 _LOOKUP_WH_BUDGET_S = 130.0
+_LOOKUP_OPERATION_TIMEOUT_S = 80.0
 
 # Lookup budget: cap each request at 3 WebHunter searches so one
 # user message naming 3 new companies stays under the cap (§12).
@@ -241,6 +242,15 @@ class _ResolvedEntities:
     @property
     def entities(self) -> list[LookupCompetitor]:
         return self.in_context + self.looked_up
+
+
+@dataclass
+class _LookupOutcome:
+    """One requested competitor lookup, including a classified failure."""
+
+    status: str
+    competitor: LookupCompetitor | None = None
+    reason: str = ""
 
 
 class Orchestrator:
@@ -457,7 +467,7 @@ class Orchestrator:
         log = logger.bind(intent=intent)
         log.info("parser_execute_started")
 
-        # Route to the appropriate handler based on intent.
+        # Structured dashboard actions bypass free-form chat planning.
         handlers = {
             "bootstrap": self._exec_bootstrap,
             "question": self._exec_question,
@@ -467,7 +477,11 @@ class Orchestrator:
             "explain": self._exec_explain,
             "regenerate": self._exec_regenerate,
         }
-        handler = handlers.get(intent, self._exec_bootstrap)
+        handler = (
+            self._exec_structured_action
+            if parser_input.action is not None
+            else handlers.get(intent, self._exec_bootstrap)
+        )
 
         try:
             return await handler(parser_input)
@@ -551,6 +565,93 @@ class Orchestrator:
                 ],
             )
 
+        missing_data = self._build_missing_data(parser_input, result)
+        lookup_statuses: list[EntityStatus] = []
+        if form_input.competitors:
+            requested_names = list(dict.fromkeys(
+                name.strip()
+                for name in form_input.competitors[:requested_count]
+                if name.strip()
+            ))
+            existing_slugs = {
+                self._slugify(competitor.name)
+                for competitor in result.competitors
+            }
+            missing_names = [
+                name for name in requested_names
+                if self._slugify(name) not in existing_slugs
+            ]
+            outcomes = await asyncio.gather(
+                *[
+                    self._lookup_entity_outcome(
+                        name, form_input.industry, "profile"
+                    )
+                    for name in missing_names
+                ],
+                return_exceptions=True,
+            )
+            for name, outcome in zip(missing_names, outcomes):
+                if isinstance(outcome, asyncio.CancelledError):
+                    raise outcome
+                slug = self._slugify(name)
+                if isinstance(outcome, BaseException):
+                    reason = f"Competitor lookup failed for {name}: {outcome}"
+                    lookup_statuses.append(
+                        EntityStatus(
+                            id=slug,
+                            name=name,
+                            status="failed",
+                            missing_fields=["provider lookup failed"],
+                            source="web",
+                        )
+                    )
+                elif outcome.competitor is None:
+                    reason = outcome.reason
+                    lookup_statuses.append(
+                        EntityStatus(
+                            id=slug,
+                            name=name,
+                            status="failed",
+                            missing_fields=[outcome.status],
+                            source="web",
+                        )
+                    )
+                else:
+                    retrieved = self._lookup_to_competitor(outcome.competitor)
+                    retrieved.status = (
+                        "partial" if outcome.status != "complete" else "complete"
+                    )
+                    result.competitors.append(retrieved)
+                    if outcome.reason:
+                        reason = outcome.reason
+                        lookup_statuses.append(
+                            EntityStatus(
+                                id=retrieved.id,
+                                name=retrieved.name,
+                                status="partial",
+                                missing_fields=[outcome.status, outcome.reason],
+                                source="web",
+                                lookupConfidence=outcome.competitor.lookupConfidence,
+                            )
+                        )
+                    else:
+                        reason = ""
+                result.sources = self._merge_sources(
+                    result.sources,
+                    outcome.competitor.sources
+                    if not isinstance(outcome, BaseException)
+                    and outcome.competitor is not None
+                    else [],
+                )
+                if reason:
+                    missing_data.append(
+                        MissingData(
+                            field=f"competitors[{name}]",
+                            reason=reason,
+                            severity="warning",
+                        )
+                    )
+
         # Enforce company limit on results and track per-entity status.
         result = self._enforce_company_limit(result, requested_count)
 
@@ -560,9 +661,26 @@ class Orchestrator:
             result.charts = result.charts + derived_charts
 
         entity_statuses = self._track_entity_statuses(result, form_input)
+        for lookup_status in lookup_statuses:
+            existing_status = next(
+                (
+                    item
+                    for item in entity_statuses["competitors"]
+                    if item.id == lookup_status.id
+                ),
+                None,
+            )
+            if existing_status is None:
+                entity_statuses["competitors"].append(lookup_status)
+                continue
+            existing_status.status = lookup_status.status
+            existing_status.missing_fields = list(dict.fromkeys(
+                existing_status.missing_fields + lookup_status.missing_fields
+            ))
+            existing_status.source = lookup_status.source
+            existing_status.lookupConfidence = lookup_status.lookupConfidence
 
         # Build missing-data report from parser gaps + validation.
-        missing_data = self._build_missing_data(parser_input, result)
         missing_data.extend(
             self._validate_result_fields(result, requested_count)
         )
@@ -719,6 +837,272 @@ class Orchestrator:
             ui_state=UIState(
                 active_tab="competitors", result_counts=counts
             ),
+        )
+
+    async def _exec_structured_action(
+        self,
+        parser_input: ParserInput,
+    ) -> ParserOutput:
+        """Retrieve only missing, competitor-specific action information."""
+        action = parser_input.action
+        current = parser_input.current_analysis or {}
+        if action is None:
+            raise ValueError("A structured action is required.")
+
+        entity = action.entity.strip()
+        target = (action.target or "").strip()
+        requested_names = [entity]
+        if action.action == "compare_competitors":
+            if target:
+                requested_names.append(target)
+            else:
+                return self._action_missing_result(
+                    parser_input,
+                    "comparison",
+                    "Choose another competitor to compare.",
+                )
+
+        profile = current.get("profile")
+        profile = profile if isinstance(profile, dict) else {}
+        business = (
+            profile.get("business_name")
+            or profile.get("businessName")
+            or current.get("businessName")
+            or ""
+        )
+        known_names = {
+            self._slugify(str(name))
+            for name in profile.get("competitors", []) or []
+            if isinstance(name, str) and name.strip()
+        }
+        known_names.update(
+            self._slugify(str(competitor.get("name")))
+            for competitor in current.get("competitors", []) or []
+            if isinstance(competitor, dict) and competitor.get("name")
+        )
+        if any(self._slugify(name) not in known_names for name in requested_names):
+            unsupported = next(
+                name
+                for name in requested_names
+                if self._slugify(name) not in known_names
+            )
+            return self._action_missing_result(
+                parser_input,
+                f"competitors[{unsupported}]",
+                (
+                    f"No saved competitor profile or source evidence exists for "
+                    f"{unsupported}; this action did not search for the business "
+                    f"itself ({business or 'unnamed business'})."
+                ),
+            )
+
+        metric_by_action = {
+            "show_pricing": "pricing",
+            "show_market_share": "market_share",
+            "show_growth": "profile",
+        }
+        metric = metric_by_action.get(action.action, "profile")
+        outcomes = await asyncio.gather(
+            *[
+                self._lookup_entity_outcome(name, self._industry_from(
+                    parser_input.context_update, current
+                ), metric, parser_input.session_id)
+                for name in requested_names
+            ],
+            return_exceptions=True,
+        )
+
+        retrieved: list[LookupCompetitor] = []
+        missing: list[MissingData] = []
+        statuses: list[EntityStatus] = []
+        for name, outcome in zip(requested_names, outcomes):
+            if isinstance(outcome, asyncio.CancelledError):
+                raise outcome
+            if isinstance(outcome, BaseException):
+                missing.append(
+                    MissingData(
+                        field=f"competitors[{name}]",
+                        reason=f"Lookup failed for {name}: {outcome}",
+                        severity="warning",
+                    )
+                )
+                statuses.append(EntityStatus(
+                    id=self._slugify(name),
+                    name=name,
+                    status="failed",
+                    missing_fields=["provider_failed"],
+                    source="web",
+                ))
+                continue
+            if outcome.competitor is None:
+                missing.append(
+                    MissingData(
+                        field=f"competitors[{name}]",
+                        reason=outcome.reason,
+                        severity="warning",
+                    )
+                )
+                statuses.append(EntityStatus(
+                    id=self._slugify(name),
+                    name=name,
+                    status="failed",
+                    missing_fields=[outcome.status],
+                    source="web",
+                ))
+                continue
+            retrieved.append(outcome.competitor)
+            if outcome.reason:
+                missing.append(
+                    MissingData(
+                        field=f"competitors[{name}]",
+                        reason=outcome.reason,
+                        severity="warning",
+                    )
+                )
+            statuses.append(EntityStatus(
+                id=outcome.competitor.id,
+                name=outcome.competitor.name,
+                status="partial" if outcome.status != "complete" else "complete",
+                missing_fields=[outcome.status] if outcome.reason else [],
+                source="web",
+                lookupConfidence=outcome.competitor.lookupConfidence,
+            ))
+
+        evidence: list[EvidenceItem] = []
+        for competitor in retrieved:
+            p = competitor.profile
+            evidence_before = len(evidence)
+            if action.action == "show_pricing":
+                if p.pricingTier and p.pricingTier.lower() != "unknown":
+                    evidence.append(EvidenceItem(
+                        label=f"{competitor.name} pricing",
+                        detail=p.pricingTier,
+                    ))
+                else:
+                    missing.append(MissingData(
+                        field=f"competitors[{competitor.name}].pricing",
+                        reason="No verified pricing details were found in the retrieved sources.",
+                        severity="info",
+                    ))
+            elif action.action == "show_market_position":
+                if p.marketPosition:
+                    evidence.append(EvidenceItem(
+                        label=f"{competitor.name} position",
+                        detail=p.marketPosition,
+                    ))
+                if p.marketShare is not None:
+                    evidence.append(EvidenceItem(
+                        label=f"{competitor.name} market share",
+                        detail=f"{p.marketShare}%",
+                    ))
+                if p.growthRate is not None:
+                    evidence.append(EvidenceItem(
+                        label=f"{competitor.name} growth",
+                        detail=f"{p.growthRate}%",
+                    ))
+            elif action.action == "show_weaknesses":
+                evidence.extend(EvidenceItem(
+                    label=f"{competitor.name} weakness",
+                    detail=detail,
+                ) for detail in p.weaknesses)
+            elif action.action == "show_strengths":
+                evidence.extend(EvidenceItem(
+                    label=f"{competitor.name} strength",
+                    detail=detail,
+                ) for detail in p.strengths)
+            elif p.description:
+                evidence.append(EvidenceItem(
+                    label=competitor.name,
+                    detail=p.description,
+                ))
+            if len(evidence) == evidence_before and action.action in {
+                "show_market_position",
+                "show_market_share",
+                "show_growth",
+                "show_weaknesses",
+                "show_strengths",
+            }:
+                missing.append(MissingData(
+                    field=f"competitors[{competitor.name}].{action.action}",
+                    reason=(
+                        f"No verified {action.action.replace('_', ' ')} information "
+                        "was found in the retrieved sources."
+                    ),
+                    severity="info",
+                ))
+
+        sources = self._merge_sources(
+            [],
+            [source for competitor in retrieved for source in competitor.sources],
+        )
+        if action.action == "show_sources" and not sources:
+            missing.append(MissingData(
+                field="sources",
+                reason="No supporting sources were returned for this action.",
+                severity="warning",
+            ))
+        if not retrieved and not missing:
+            missing.append(MissingData(
+                field=action.action,
+                reason="No usable information was returned for this action.",
+                severity="warning",
+            ))
+
+        answer_competitors = retrieved[:1] if action.action == "compare_competitors" else retrieved
+        compared = retrieved[1:] if action.action == "compare_competitors" else []
+        summary = (
+            f"Retrieved {len(retrieved)} of {len(requested_names)} requested competitor profiles."
+            if retrieved
+            else f"No additional sourced information is available for {entity}."
+        )
+        counts = ResultCounts(
+            requested=len(requested_names),
+            retrieved=len(retrieved),
+            valid=sum(
+                1 for item in statuses if item.status in ("complete", "partial")
+            ),
+            displayed=len(retrieved),
+        )
+        return ParserOutput(
+            intent=parser_input.intent,
+            status="partial" if missing else "success",
+            data=self._analysis_from_dict(current),
+            answer=AnswerBlock(
+                summary=summary,
+                competitors=answer_competitors,
+                comparedTo=compared,
+                question=action.action,
+                evidence=evidence,
+                sources=sources,
+            ),
+            missing_data=missing,
+            context_update=self._context_from_dict(parser_input.context_update),
+            result_counts=counts,
+            operations_performed=["retrieve", "normalize"],
+            entity_statuses={"competitors": statuses},
+            ui_state=UIState(result_counts=counts),
+        )
+
+    def _action_missing_result(
+        self,
+        parser_input: ParserInput,
+        field: str,
+        reason: str,
+    ) -> ParserOutput:
+        """Return a quick, explicit missing-data result without an LLM call."""
+        counts = ResultCounts(requested=1)
+        return ParserOutput(
+            intent=parser_input.intent,
+            status="partial",
+            data=self._analysis_from_dict(parser_input.current_analysis),
+            answer=AnswerBlock(
+                summary="The requested action has no supporting data in the current analysis."
+            ),
+            missing_data=[MissingData(field=field, reason=reason, severity="warning")],
+            context_update=self._context_from_dict(parser_input.context_update),
+            result_counts=counts,
+            operations_performed=["inspect_context"],
+            ui_state=UIState(result_counts=counts),
         )
 
     async def _exec_refine(self, parser_input: ParserInput) -> ParserOutput:
@@ -1093,17 +1477,49 @@ class Orchestrator:
         metric: str = "profile",
         session_id: str | None = None,
     ) -> LookupCompetitor | None:
+        """Compatibility wrapper for normal question lookups."""
+        outcome = await self._lookup_entity_outcome(
+            company, industry, metric, session_id
+        )
+        return outcome.competitor
+
+    async def _lookup_entity_outcome(
+        self,
+        company: str,
+        industry: str,
+        metric: str = "profile",
+        session_id: str | None = None,
+    ) -> _LookupOutcome:
+        try:
+            async with asyncio.timeout(_LOOKUP_OPERATION_TIMEOUT_S):
+                return await self._run_lookup_entity(
+                    company, industry, metric, session_id
+                )
+        except TimeoutError:
+            return _LookupOutcome(
+                status="timed_out",
+                reason=f"Competitor lookup timed out for {company}.",
+            )
+
+    async def _run_lookup_entity(
+        self,
+        company: str,
+        industry: str,
+        metric: str = "profile",
+        session_id: str | None = None,
+    ) -> _LookupOutcome:
         """Look up a single company (§5.1 steps 2-3).
 
         WebHunter search (2 retries / 1s) → LLMPing extraction
-        (2 retries / 500ms, fallback: raw sources only). Returns
-        None when WebHunter yields no sources — the entity failed
-        and the caller skips it (§7.2). `metric` steers the
-        WebHunter query toward the user's requested data point.
+        (2 retries / 500ms, fallback: raw sources only). The outcome
+        distinguishes an empty search from provider, timeout, and
+        malformed-response failures while retaining usable evidence.
         """
         log = logger.bind(company=company, metric=metric)
 
         sources: list[dict[str, Any]] = []
+        search_succeeded = False
+        search_errors: list[str] = []
         loop_start = time.monotonic()
         for attempt in range(_LOOKUP_WH_RETRIES + 1):
             if attempt > 0 and (
@@ -1122,8 +1538,10 @@ class Orchestrator:
                 sources = await self.webhunter.search_company(
                     company, industry, metric
                 )
+                search_succeeded = True
                 break
             except WebHunterError as e:
+                search_errors.append(str(e))
                 log.warning(
                     "lookup_webhunter_failed",
                     attempt=attempt,
@@ -1132,16 +1550,54 @@ class Orchestrator:
                 if attempt < _LOOKUP_WH_RETRIES:
                     await asyncio.sleep(_LOOKUP_WH_DELAY_S)
         if not sources:
-            return None
+            if search_succeeded:
+                return _LookupOutcome(
+                    status="not_found",
+                    reason=f"No usable sources found for {company}.",
+                )
+            timed_out = bool(search_errors) and all(
+                "timeout" in error.lower() or "timed out" in error.lower()
+                for error in search_errors
+            )
+            status = "timed_out" if timed_out else "provider_failed"
+            reason = (
+                f"WebHunter timed out while researching {company}."
+                if timed_out
+                else f"WebHunter failed while researching {company}: "
+                f"{search_errors[-1] if search_errors else 'no usable response'}"
+            )
+            return _LookupOutcome(status=status, reason=reason)
+        if not isinstance(sources, list):
+            return _LookupOutcome(
+                status="malformed",
+                reason=f"WebHunter returned malformed sources for {company}.",
+            )
+        valid_sources = [
+            source for source in sources
+            if isinstance(source, dict) and isinstance(source.get("url"), str) and source["url"]
+        ]
+        if not valid_sources:
+            return _LookupOutcome(
+                status="malformed",
+                reason=f"WebHunter returned unusable sources for {company}.",
+            )
+        sources = valid_sources
 
         profile: dict[str, Any] | None = None
+        extraction_errors: list[str] = []
+        malformed_profile = False
         for attempt in range(_LOOKUP_LLM_RETRIES + 1):
             try:
-                profile = await self.llmping.extract_profile(
+                extracted = await self.llmping.extract_profile(
                     company, industry, sources, session_id=session_id
                 )
+                if not isinstance(extracted, dict):
+                    malformed_profile = True
+                    break
+                profile = extracted
                 break
             except LLMPingError as e:
+                extraction_errors.append(str(e))
                 log.warning(
                     "lookup_extract_failed",
                     attempt=attempt,
@@ -1149,6 +1605,7 @@ class Orchestrator:
                 )
                 if attempt < _LOOKUP_LLM_RETRIES:
                     await asyncio.sleep(_LOOKUP_LLM_DELAY_S)
+        extraction_failed = profile is None and bool(extraction_errors)
         if profile is None:
             # §7.1 fallback: raw sources only — partial entity.
             profile = {
@@ -1160,6 +1617,48 @@ class Orchestrator:
                 "sourceCount": len(sources),
             }
 
+        if malformed_profile or extraction_failed:
+            profile = {
+                "name": company,
+                "description": sources[0].get("snippet", ""),
+                "confidence": 0,
+                "sourceCount": len(sources),
+            }
+        malformed_fields: list[str] = []
+        for key in (
+            "name", "description", "pricingTier", "pricing_tier",
+            "marketPosition", "market_position", "funding", "founded", "hq",
+        ):
+            value = profile.get(key)
+            if value is not None and not isinstance(value, str):
+                malformed_fields.append(key)
+                if key == "description":
+                    profile[key] = sources[0].get("snippet", "")
+                elif key != "name":
+                    profile[key] = ""
+                else:
+                    profile[key] = company
+        for key in ("strengths", "weaknesses"):
+            values = profile.get(key)
+            if values is None:
+                profile[key] = []
+            elif not isinstance(values, list):
+                malformed_fields.append(key)
+                profile[key] = []
+            else:
+                valid_values = [value for value in values if isinstance(value, str)]
+                if len(valid_values) != len(values):
+                    malformed_fields.append(key)
+                profile[key] = valid_values
+        for key in ("marketShare", "market_share", "growthRate", "growth_rate"):
+            value = profile.get(key)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float, str))
+                or isinstance(value, str) and not value.strip()
+            ):
+                malformed_fields.append(key)
+                profile[key] = None
         profile["sources"] = sources
         profile["confidence"] = clamp_score(profile.get("confidence"))
         profile["sourceCount"] = int(
@@ -1167,7 +1666,56 @@ class Orchestrator:
         )
         name = str(profile.get("name") or company)
         slug = self._slugify(name) or self._slugify(company)
-        return self._to_lookup_competitor(slug, name, profile, "web")
+        competitor = self._to_lookup_competitor(slug, name, profile, "web")
+        if malformed_profile:
+            return _LookupOutcome(
+                status="malformed",
+                competitor=competitor,
+                reason=(
+                    f"LLMPing returned malformed profile data for {company}; "
+                    "source evidence was retained."
+                ),
+            )
+        if malformed_fields:
+            return _LookupOutcome(
+                status="malformed",
+                competitor=competitor,
+                reason=(
+                    f"LLMPing returned malformed fields for {company}: "
+                    f"{', '.join(sorted(set(malformed_fields)))}; "
+                    "valid profile fields and sources were retained."
+                ),
+            )
+        if extraction_failed:
+            return _LookupOutcome(
+                status="provider_failed",
+                competitor=competitor,
+                reason=(
+                    f"LLMPing profile extraction failed for {company}; "
+                    f"retained available source evidence. {extraction_errors[-1]}"
+                ),
+            )
+        if not competitor.profile.description:
+            return _LookupOutcome(
+                status="partial",
+                competitor=competitor,
+                reason=f"Profile details for {company} were incomplete.",
+            )
+        if (
+            competitor.lookupConfidence is not None
+            and competitor.lookupConfidence < 40
+        ) or len(sources) < 2 or not competitor.profile.marketPosition:
+            return _LookupOutcome(
+                status="partial",
+                competitor=competitor,
+                reason=(
+                    f"Partial data for {company} "
+                    f"(confidence={competitor.lookupConfidence}, "
+                    f"sources={len(sources)}, "
+                    f"marketPosition={bool(competitor.profile.marketPosition)})."
+                ),
+            )
+        return _LookupOutcome(status="complete", competitor=competitor)
 
     # ── Entity extraction & reference resolution ───────────────
     @staticmethod
@@ -1576,10 +2124,12 @@ class Orchestrator:
         self._normalize_market_share(result.competitors)
         for c in result.competitors:
             c.marketPosition = self._canon(
-                c.marketPosition, MARKET_POSITIONS, "Emerging"
+                c.marketPosition, MARKET_POSITIONS, "unknown"
             )
-            c.marketShare = max(0.0, min(100.0, c.marketShare))
-            c.growthRate = self._to_float(c.growthRate, 0.0)
+            if c.marketShare is not None:
+                c.marketShare = max(0.0, min(100.0, c.marketShare))
+            if c.growthRate is not None:
+                c.growthRate = self._to_float(c.growthRate)
             if c.status not in ENTITY_STATUSES:
                 c.status = "complete"
         for p in result.products:
@@ -1622,28 +2172,33 @@ class Orchestrator:
         """
         if not competitors:
             return
-        for c in competitors:
-            c.marketShare = max(0.0, min(100.0, c.marketShare))
-        total = sum(c.marketShare for c in competitors)
+        known_shares = [c for c in competitors if c.marketShare is not None]
+        for competitor in known_shares:
+            competitor.marketShare = max(
+                0.0, min(100.0, competitor.marketShare)
+            )
+        if len(known_shares) != len(competitors):
+            return
+        total = sum(c.marketShare for c in known_shares)
         if total <= 0:
             # No share data at all — leave the zeros. An equal
             # split would fabricate values the upstream never
             # provided (PARSER.md §11: no hallucinated filler).
             return
-        non_zero = sum(1 for c in competitors if c.marketShare > 0)
+        non_zero = sum(1 for c in known_shares if c.marketShare > 0)
         if non_zero < 2:
             # Lone partial evidence — keep the raw clamped value.
             return
         if abs(total - 100.0) <= 1.0:
             return
         scale = 100.0 / total
-        for c in competitors:
+        for c in known_shares:
             c.marketShare = round(c.marketShare * scale, 1)
         # Repair rounding drift on the largest share so the
         # final sum is exactly 100.
         drift = round(100.0 - sum(c.marketShare for c in competitors), 1)
         if drift:
-            largest = max(competitors, key=lambda c: c.marketShare)
+            largest = max(known_shares, key=lambda c: c.marketShare)
             largest.marketShare = round(largest.marketShare + drift, 1)
 
     def _derive_charts(
@@ -1665,7 +2220,8 @@ class Orchestrator:
 
         # marketShare → bar + pie
         if result.competitors and any(
-            c.marketShare > 0 for c in result.competitors
+            c.marketShare is not None and c.marketShare > 0
+            for c in result.competitors
         ):
             points = [
                 ChartPoint(
@@ -1674,6 +2230,7 @@ class Orchestrator:
                     color=entity_color(c.id, c.name),
                 )
                 for c in result.competitors
+                if c.marketShare is not None
             ]
             charts.append(
                 ChartData(
@@ -1711,7 +2268,8 @@ class Orchestrator:
 
         # growthRate → bar + pie
         if result.competitors and any(
-            c.growthRate != 0 for c in result.competitors
+            c.growthRate is not None and c.growthRate != 0
+            for c in result.competitors
         ):
             points = [
                 ChartPoint(
@@ -1720,6 +2278,7 @@ class Orchestrator:
                     color=entity_color(c.id, c.name),
                 )
                 for c in result.competitors
+                if c.growthRate is not None
             ]
             charts.append(
                 ChartData(
@@ -1894,7 +2453,9 @@ class Orchestrator:
                     status=status,
                     missing_fields=missing,
                     source=(
-                        "context" if slug in form_competitors else "web"
+                        "web"
+                        if comp.explanation and comp.explanation.sources
+                        else "context" if slug in form_competitors else "web"
                     ),
                     lookupConfidence=None,
                 )
@@ -1975,6 +2536,15 @@ class Orchestrator:
                 MissingData(
                     field="competitors",
                     reason="No competitor data available",
+                    severity="warning",
+                )
+            )
+
+        if not result.sources:
+            missing.append(
+                MissingData(
+                    field="sources",
+                    reason="No supporting sources were returned for this analysis.",
                     severity="warning",
                 )
             )
@@ -2317,6 +2887,8 @@ class Orchestrator:
                 self._to_competitor(c)
                 for c in llm_response.get("competitors", []) or []
                 if isinstance(c, dict)
+                and isinstance(c.get("name"), str)
+                and c["name"].strip()
             ],
             products=[
                 self._to_product(p)
@@ -2412,10 +2984,10 @@ class Orchestrator:
                 if (c.get("hq") is not None or c.get("headquarters") is not None)
                 else None
             ),
-            marketShare=self._to_float(
+            marketShare=self._optional_float(
                 c.get("marketShare", c.get("market_share"))
             ),
-            growthRate=self._to_float(
+            growthRate=self._optional_float(
                 c.get("growthRate", c.get("growth_rate"))
             ),
             pricingTier=str(
@@ -2750,14 +3322,10 @@ class Orchestrator:
             # Competitor contract defaults unknown shares to 0
             # (PARSER.md §4.1) but we must not turn None into 0
             # when a real value exists upstream.
-            marketShare=(
-                p.marketShare if p.marketShare is not None else 0.0
-            ),
-            growthRate=(
-                p.growthRate if p.growthRate is not None else 0.0
-            ),
+            marketShare=p.marketShare,
+            growthRate=p.growthRate,
             pricingTier=p.pricingTier,
-            marketPosition=p.marketPosition,
+            marketPosition=p.marketPosition or "unknown",
             strengths=p.strengths,
             weaknesses=p.weaknesses,
             status=(
@@ -2765,9 +3333,11 @@ class Orchestrator:
                 if lc.lookupConfidence is None or lc.lookupConfidence >= 40
                 else "partial"
             ),
-            explanation=Explanation(summary=p.description)
-            if p.description
-            else None,
+            explanation=(
+                Explanation(summary=p.description, sources=lc.sources)
+                if p.description or lc.sources
+                else None
+            ),
         )
 
     async def _compare_summary(
@@ -2951,6 +3521,22 @@ class Orchestrator:
             for i, s in enumerate(payload.get("sources") or []):
                 add(self._to_source(s, i))
         return out
+
+    @staticmethod
+    def _merge_sources(
+        existing: list[Source],
+        additional: list[Source],
+    ) -> list[Source]:
+        merged: list[Source] = []
+        seen: set[str] = set()
+        for source in existing + additional:
+            key = source.url or source.title or source.id
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            merged.append(source)
+        return merged
 
     def _to_source(self, raw: Any, idx: int) -> Source | None:
         """Map an LLMPing/WebHunter source into PARSER.md §2.10."""

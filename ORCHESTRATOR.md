@@ -79,6 +79,7 @@ If the user asks about a company the UI has never heard of, the orchestrator **s
   "parser_input": {
     "intent": "question",
     "message": "Tell me about Fragante as a competitor in this list",
+    "action": null,
     "session_id": "abc-123",
     "current_analysis": { /* last full response, may be null */ },
     "context_update": { /* last context_update, may be null */ },
@@ -104,6 +105,19 @@ Minimal shapes per intent:
 
 // regenerate
 { "parser_input": { "intent": "regenerate", "form_input": { /* same as last bootstrap */ }, "context_update": { /* last */ } } }
+
+// contextual action (allowlisted; no free-form intent planning)
+{
+  "parser_input": {
+    "intent": "question",
+    "action": {
+      "action": "show_pricing",
+      "entity": "Zoho Creator",
+      "section": "competitor"
+    },
+    "current_analysis": { /* current analysis */ }
+  }
+}
 ```
 
 ### 4.2 Field Reference
@@ -115,6 +129,7 @@ Minimal shapes per intent:
 | `session_id`       | string   | For follow-ups   | Stable session identifier (UI-generated UUID)        |
 | `context_update`   | object   | Recommended      | Last `context_update` from a previous response       |
 | `current_analysis` | object   | Optional         | Last full `data` payload (for rich follow-ups)       |
+| `action`           | object   | Optional         | Allowlisted contextual action `{action, entity, section, target?}`; routes directly to targeted retrieval and skips free-form LLM planning |
 | `form_input`       | object   | For bootstrap/refine/regenerate | The bootstrap questionnaire payload |
 | `requested_count`  | int      | Optional         | Max competitors (1-3, default 3)                     |
 
@@ -130,6 +145,7 @@ The orchestrator owns the routing. The UI just labels what it thinks the user wa
 | `refine`       | Mutate the dataset (add/remove/change competitor). If the user names a new company, search it first; never invent data. |
 | `compare`      | Generate side-by-side comparison for two or more named entities. Look each up via WebHunter if not in context. |
 | `explain`      | Drill into a single data point from the previous response. |
+| Structured `action` | Resolve the action ID against current data first; if needed, retrieve only the named competitor(s), preserve successful profiles, and report unavailable fields in `missing_data`. Non-competitor actions without supporting context return a partial result without an LLM chat round-trip. |
 | `regenerate`   | Re-run bootstrap with the same `form_input`. |
 
 ---

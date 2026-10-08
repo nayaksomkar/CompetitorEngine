@@ -554,6 +554,11 @@ async def test_market_share_normalized_to_100():
             "description": "Niche",
             "marketShare": 20,
         },
+        {
+            "name": "CompD",
+            "description": "Additional competitor",
+            "marketShare": 0,
+        },
     ]
     orch = make_bootstrap_orchestrator(response)
     result = await orch.execute(
@@ -569,28 +574,39 @@ async def test_market_share_normalized_to_100():
 
 @pytest.mark.asyncio
 async def test_market_share_zeros_stay_zero_without_data():
-    """Explicit zeros or missing shares → zeros stay zero and
-    no share charts are derived (no fabricated values)."""
-    for mutate in (
-        lambda c: c.update(marketShare=0, growthRate=0),
-        lambda c: [c.pop(k, None) for k in ("marketShare", "growthRate")],
-    ):
-        response = dict(FULL_LLM_RESPONSE)
-        for c in response["competitors"]:
-            mutate(c)
-        orch = make_bootstrap_orchestrator(response)
-        result = await orch.execute(
-            ParserInput(
-                intent="bootstrap",
-                form_input=make_form_input(),
-                requested_count=2,
-            )
+    """Explicit zeros remain zero; absent metrics remain unavailable."""
+    response = dict(FULL_LLM_RESPONSE)
+    for competitor in response["competitors"]:
+        competitor["marketShare"] = 0
+        competitor["growthRate"] = 0
+    orch = make_bootstrap_orchestrator(response)
+    result = await orch.execute(
+        ParserInput(
+            intent="bootstrap",
+            form_input=make_form_input(),
+            requested_count=2,
         )
-        assert all(
-            c.marketShare == 0 for c in result.data.competitors
+    )
+    assert all(c.marketShare == 0 for c in result.data.competitors)
+    assert result.data.charts == []
+    assert result.derived_data.charts_generated == []
+
+    missing_response = dict(FULL_LLM_RESPONSE)
+    for competitor in missing_response["competitors"]:
+        competitor.pop("marketShare", None)
+        competitor.pop("growthRate", None)
+    orch = make_bootstrap_orchestrator(missing_response)
+    result = await orch.execute(
+        ParserInput(
+            intent="bootstrap",
+            form_input=make_form_input(),
+            requested_count=2,
         )
-        assert result.data.charts == []
-        assert result.derived_data.charts_generated == []
+    )
+    assert all(c.marketShare is None for c in result.data.competitors)
+    assert all(c.growthRate is None for c in result.data.competitors)
+    assert result.data.charts == []
+    assert result.derived_data.charts_generated == []
 
 
 # ── Slugs & colors ────────────────────────────────────

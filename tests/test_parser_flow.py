@@ -292,6 +292,190 @@ async def test_parser_bootstrap_reports_missing_data():
     assert any(m.field for m in result.missing_data)
 
 
+@pytest.mark.parametrize("successful_lookups", [1, 2, 3])
+@pytest.mark.asyncio
+async def test_bootstrap_preserves_each_successful_requested_lookup(
+    monkeypatch,
+    successful_lookups,
+):
+    """A failed requested competitor does not discard other lookups."""
+    import app.orchestrator as orchestrator_module
+
+    monkeypatch.setattr(orchestrator_module, "_LOOKUP_WH_RETRIES", 0)
+    monkeypatch.setattr(orchestrator_module, "_LOOKUP_WH_DELAY_S", 0)
+    response = dict(FULL_LLM_RESPONSE)
+    response["competitors"] = []
+    llmping = AsyncMock(spec=LLMPingClient)
+    llmping.chat = AsyncMock(return_value=response)
+    llmping.extract_profile = AsyncMock(return_value={
+        "description": "Sourced competitor profile",
+        "marketPosition": "Challenger",
+        "pricingTier": "",
+        "confidence": 85,
+        "sourceCount": 2,
+        "strengths": ["Verified strength"],
+        "weaknesses": ["Verified weakness"],
+    })
+    webhunter = AsyncMock(spec=WebHunterClient)
+    webhunter.research = AsyncMock(return_value={})
+
+    async def search_company(company, _industry, _metric):
+        index = ["CompA", "CompB", "CompC"].index(company)
+        if index >= successful_lookups:
+            raise WebHunterError(f"provider timeout for {company}")
+        return [
+            {
+                "url": f"https://evidence.example/{company.lower()}/{source_id}",
+                "title": f"{company} source {source_id}",
+                "snippet": f"Evidence snippet {source_id}",
+            }
+            for source_id in range(2)
+        ]
+
+    webhunter.search_company = AsyncMock(side_effect=search_company)
+    orch = Orchestrator(llmping=llmping, webhunter=webhunter)
+    result = await orch.execute(
+        make_parser_input(form_input=make_form(), requested_count=3)
+    )
+
+    assert len(result.data.competitors) == successful_lookups
+    assert result.result_counts.retrieved == successful_lookups
+    assert len(result.data.sources) == 1 + successful_lookups * 2
+    assert all(c.explanation and c.explanation.sources for c in result.data.competitors)
+    assert all(c.marketShare is None and c.pricingTier == "" for c in result.data.competitors)
+    assert len(result.entity_statuses["competitors"]) == 3
+    assert sum(s.status == "failed" for s in result.entity_statuses["competitors"]) == 3 - successful_lookups
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_distinguishes_empty_timeout_and_provider_failure(monkeypatch):
+    import app.orchestrator as orchestrator_module
+
+    monkeypatch.setattr(orchestrator_module, "_LOOKUP_WH_RETRIES", 0)
+    monkeypatch.setattr(orchestrator_module, "_LOOKUP_WH_DELAY_S", 0)
+    response = dict(FULL_LLM_RESPONSE)
+    response["competitors"] = []
+    llmping = AsyncMock(spec=LLMPingClient)
+    llmping.chat = AsyncMock(return_value=response)
+    webhunter = AsyncMock(spec=WebHunterClient)
+    webhunter.research = AsyncMock(return_value={})
+
+    async def search_company(company, _industry, _metric):
+        if company == "CompA":
+            return []
+        if company == "CompB":
+            raise WebHunterError("request timed out")
+        raise WebHunterError("upstream returned 503")
+
+    webhunter.search_company = AsyncMock(side_effect=search_company)
+    result = await Orchestrator(llmping=llmping, webhunter=webhunter).execute(
+        make_parser_input(form_input=make_form(), requested_count=3)
+    )
+
+    assert result.data.competitors == []
+    reasons = {item.field: item.reason for item in result.missing_data}
+    assert "No usable sources" in reasons["competitors[CompA]"]
+    assert "timed out" in reasons["competitors[CompB]"]
+    assert "failed" in reasons["competitors[CompC]"]
+    statuses = {item.name: item.missing_fields for item in result.entity_statuses["competitors"]}
+    assert statuses["CompA"] == ["not_found"]
+    assert statuses["CompB"] == ["timed_out"]
+    assert statuses["CompC"] == ["provider_failed"]
+
+
+@pytest.mark.asyncio
+async def test_structured_supporting_data_action_does_not_start_chat():
+    """An empty business-source action returns an honest result promptly."""
+    llmping = AsyncMock(spec=LLMPingClient)
+    webhunter = AsyncMock(spec=WebHunterClient)
+    parser_input = ParserInput(
+        intent="question",
+        message="Show supporting data for the selected business using the current analysis.",
+        action={
+            "action": "show_supporting_data",
+            "entity": "FlowPilot",
+            "section": "sources",
+        },
+        current_analysis={
+            "businessName": "FlowPilot",
+            "profile": {
+                "businessName": "FlowPilot",
+                "competitors": ["Zoho Creator", "ClickUp", "Fieldproxy"],
+            },
+            "competitors": [],
+            "sources": [],
+        },
+    )
+
+    result = await Orchestrator(llmping=llmping, webhunter=webhunter).execute(
+        parser_input
+    )
+
+    assert result.status == "partial"
+    assert result.missing_data[0].field == "competitors[FlowPilot]"
+    assert "did not search for the business itself" in result.missing_data[0].reason
+    llmping.chat.assert_not_called()
+    webhunter.search_company.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_structured_comparison_keeps_success_when_other_lookup_fails(monkeypatch):
+    import app.orchestrator as orchestrator_module
+
+    monkeypatch.setattr(orchestrator_module, "_LOOKUP_WH_RETRIES", 0)
+    monkeypatch.setattr(orchestrator_module, "_LOOKUP_WH_DELAY_S", 0)
+    llmping = AsyncMock(spec=LLMPingClient)
+    llmping.extract_profile = AsyncMock(return_value={
+        "description": "Company profile from returned sources",
+        "marketPosition": "Challenger",
+        "confidence": 90,
+        "sourceCount": 2,
+    })
+    webhunter = AsyncMock(spec=WebHunterClient)
+
+    async def search_company(company, _industry, _metric):
+        if company == "ClickUp":
+            raise WebHunterError("provider timed out")
+        return [
+            {
+                "url": f"https://evidence.example/{source_id}",
+                "title": f"Source {source_id}",
+                "snippet": "Verified details",
+            }
+            for source_id in range(2)
+        ]
+
+    webhunter.search_company = AsyncMock(side_effect=search_company)
+    parser_input = ParserInput(
+        intent="compare",
+        action={
+            "action": "compare_competitors",
+            "entity": "Zoho Creator",
+            "target": "ClickUp",
+            "section": "competitor",
+        },
+        current_analysis={
+            "businessName": "FlowPilot",
+            "profile": {
+                "businessName": "FlowPilot",
+                "competitors": ["Zoho Creator", "ClickUp"],
+            },
+            "competitors": [],
+        },
+    )
+
+    result = await Orchestrator(llmping=llmping, webhunter=webhunter).execute(
+        parser_input
+    )
+
+    assert result.status == "partial"
+    assert [competitor.name for competitor in result.answer.competitors] == ["Zoho Creator"]
+    assert result.answer.comparedTo == []
+    assert len(result.answer.sources) == 2
+    assert any("ClickUp" in item.field and "timed out" in item.reason for item in result.missing_data)
+    llmping.chat.assert_not_called()
+
+
 # ── Question / follow-up tests ──────────────────────────────
 @pytest.mark.asyncio
 async def test_parser_question_returns_answer():
@@ -365,6 +549,7 @@ async def test_parser_failure_isolation_preserves_valid_data():
     # Should still return the valid competitor.
     assert len(result.data.competitors) >= 1
     assert result.data.competitors[0].name == "GoodComp"
+    assert all(competitor.name for competitor in result.data.competitors)
 
 
 @pytest.mark.asyncio

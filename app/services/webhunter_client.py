@@ -70,6 +70,16 @@ def _build_query(business: dict[str, Any], research_types: list[str]) -> str:
     geos = business.get("geography") or ""
     pricing = business.get("pricing") or ""
     model = business.get("business_model") or ""
+    competitors = business.get("competitors")
+    competitor_names = (
+        [name.strip() for name in competitors if isinstance(name, str) and name.strip()]
+        if isinstance(competitors, list)
+        else []
+    )
+    competitor_clause = (
+        f" Requested competitors: {', '.join(competitor_names)}."
+        if competitor_names else ""
+    )
 
     topics = research_types or list(_RESEARCH_TYPE_PHRASES.keys())
     phrases = [
@@ -86,7 +96,7 @@ def _build_query(business: dict[str, Any], research_types: list[str]) -> str:
     if facts:
         facts = f" ({facts})"
     return (
-        f"Research {name}{facts}. Cover: {topic_clause}. "
+        f"Research {name}{facts}.{competitor_clause} Cover: {topic_clause}. "
         f"Return URLs, titles, snippets, and any crawled content."
     )
 

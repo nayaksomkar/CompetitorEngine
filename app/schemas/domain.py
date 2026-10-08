@@ -78,8 +78,8 @@ class Competitor(BaseModel):
     funding: str | None = None
     founded: str | None = None
     hq: str | None = None
-    marketShare: float = 0.0
-    growthRate: float = 0.0
+    marketShare: float | None = None
+    growthRate: float | None = None
     pricingTier: str = ""
     marketPosition: str = "Emerging"
     strengths: list[str] = Field(default_factory=list)
