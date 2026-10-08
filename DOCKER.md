@@ -116,17 +116,19 @@ docker rm -f competitorengine llmping webhunter
 
 ## Production (Render)
 
-On Render, set these env vars in the service dashboard to skip discovery
-and point directly at the deployed upstreams:
+The Dockerfile bakes the deployed upstream URLs directly into the image
+(`ENV LLMPING_URL` / `ENV WEBHUNTER_URL`), so the Render service talks to
+the deployed LLMPing/WebHunter without any dashboard configuration:
 
 ```
 LLMPING_URL=https://llmping.onrender.com
 WEBHUNTER_URL=https://webhunter-1v83.onrender.com
-REQUIRE_SERVICE_URLS=true
 ```
 
 With explicit URLs set, the orchestrator does **not** probe any local
-Docker addresses — it talks straight to the Render services.
+Docker addresses — it talks straight to the Render services. To override,
+set these env vars in the service dashboard (dashboard env vars take
+precedence over the Dockerfile defaults).
 
 ## Troubleshooting
 

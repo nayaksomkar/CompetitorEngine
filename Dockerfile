@@ -7,6 +7,12 @@ LABEL org.opencontainers.image.title="CompetitorEngine" \
 
 WORKDIR /app
 
+# Deployed upstreams (public service URLs, no secrets). Render builds this
+# image without dashboard env vars, so the running service gets the real
+# endpoints directly and skips local/Docker discovery entirely.
+ENV LLMPING_URL=https://llmping.onrender.com
+ENV WEBHUNTER_URL=https://webhunter-1v83.onrender.com
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
