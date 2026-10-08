@@ -4,7 +4,11 @@ flow, context management (§8), chart derivation (PARSER.md
 import pytest
 from unittest.mock import AsyncMock
 
-from app.orchestrator import Orchestrator, _evicted_profile_cache
+from app.orchestrator import (
+    Orchestrator,
+    _detect_metric,
+    _evicted_profile_cache,
+)
 from app.schemas.analysis import ParserInput
 from app.services.llmping_client import LLMPingClient
 from app.services.webhunter_client import (
@@ -110,9 +114,10 @@ async def test_question_lookup_flow():
     assert len(result.answer.sources) == 2
     assert result.status == "success"
 
-    # Upstreams were called exactly once per entity.
+    # Upstreams were called exactly once per entity; the
+    # generic question uses the default profile query.
     webhunter.search_company.assert_awaited_once_with(
-        "Fragante", "Fragrance"
+        "Fragante", "Fragrance", "profile"
     )
     llmping.extract_profile.assert_awaited_once()
 
@@ -600,6 +605,164 @@ def test_slugify():
         "cafe-co"
     )
     assert Orchestrator._slugify("") == ""
+
+
+# ── Metric preservation in lookups (§7 alignment) ─────
+@pytest.mark.asyncio
+async def test_market_share_question_steers_webhunter_query():
+    """'What is the market share of X' → WebHunter query must
+    target market share, not a generic profile."""
+    llmping = make_lookup_llmping(
+        confidence=78,
+        source_count=5,
+    )
+    llmping.extract_profile.return_value["marketShare"] = 34.5
+    webhunter = make_lookup_webhunter()
+    orch = Orchestrator(llmping=llmping, webhunter=webhunter)
+
+    result = await orch.execute(
+        ParserInput(
+            intent="question",
+            message="What is the market share of Fragante?",
+            context_update=make_context(),
+        )
+    )
+    call = webhunter.search_company.await_args
+    assert call is not None
+    assert call.args[2] == "market_share"
+
+
+@pytest.mark.asyncio
+async def test_market_share_value_survives_into_answer():
+    """An extracted marketShare reaches answer.competitors[].profile;
+    a missing one stays None (never 0)."""
+    # With a value.
+    llmping = make_lookup_llmping()
+    llmping.extract_profile.return_value["marketShare"] = 34.5
+    orch = Orchestrator(
+        llmping=llmping, webhunter=make_lookup_webhunter()
+    )
+    result = await orch.execute(
+        ParserInput(
+            intent="question",
+            message="What is the market share of Fragante?",
+            context_update=make_context(),
+        )
+    )
+    assert result.answer.competitors[0].profile.marketShare == 34.5
+
+    # Without a value — unavailable, not zero.
+    llmping2 = make_lookup_llmping()
+    orch2 = Orchestrator(
+        llmping=llmping2, webhunter=make_lookup_webhunter()
+    )
+    result2 = await orch2.execute(
+        ParserInput(
+            intent="question",
+            message="What is the market share of Fragante?",
+            context_update=make_context(),
+        )
+    )
+    assert (
+        result2.answer.competitors[0].profile.marketShare is None
+    )
+
+
+def test_garbage_market_share_becomes_none_not_zero():
+    """LLMPing returning a non-numeric share string must not be
+    coerced into a fabricated 0% — it stays unavailable."""
+    orch = Orchestrator.__new__(Orchestrator)
+    lc = orch._to_lookup_competitor(
+        "fragante",
+        "Fragante",
+        {
+            "name": "Fragante",
+            "description": "d",
+            "marketShare": "thirty percent",
+            "growthRate": None,
+            "sources": [],
+        },
+        "web",
+    )
+    assert lc.profile.marketShare is None
+    assert lc.profile.growthRate is None
+
+
+@pytest.mark.asyncio
+async def test_lone_market_share_is_not_rescaled():
+    """A single non-zero share among unknowns is kept as-is —
+    scaling one company's 30% to 100% fabricates data."""
+    response = dict(FULL_LLM_RESPONSE)
+    response["competitors"] = [
+        {"name": "CompA", "description": "A", "marketShare": 30},
+        {"name": "CompB", "description": "B", "marketShare": 0},
+        {"name": "CompC", "description": "C"},
+    ]
+    orch = make_bootstrap_orchestrator(response)
+    result = await orch.execute(
+        ParserInput(
+            intent="bootstrap",
+            form_input=make_form_input(),
+            requested_count=3,
+        )
+    )
+    shares = {c.name: c.marketShare for c in result.data.competitors}
+    assert shares["CompA"] == 30.0
+    assert shares["CompB"] == 0.0
+
+
+def test_metric_detection():
+    assert _detect_metric("What is the market share of Fragante?") == (
+        "market_share"
+    )
+    assert _detect_metric("how much does Fragante cost?") == "pricing"
+    assert _detect_metric("Fragante funding and valuation") == "funding"
+    assert _detect_metric("tell me about Fragante") == "profile"
+
+
+def test_requested_metric_gap_reported_when_absent():
+    """A requested metric with no evidence-backed value is
+    reported in missing_data — never silently dropped."""
+    orch = Orchestrator.__new__(Orchestrator)
+    lc = orch._to_lookup_competitor(
+        "fragante",
+        "Fragante",
+        {"name": "Fragante", "description": "d", "sources": []},
+        "web",
+    )
+    gap = Orchestrator._requested_metric_gap(
+        "market_share", [lc]
+    )
+    assert gap is not None
+    assert gap.field == "marketShare"
+    assert "Fragante" in gap.reason
+
+    # A real value → no gap.
+    lc.profile.marketShare = 34.5
+    assert (
+        Orchestrator._requested_metric_gap("market_share", [lc])
+        is None
+    )
+
+
+def test_requested_metric_gap_unknown_pricing_tier():
+    """pricingTier='unknown' is the extraction schema's no-data
+    value — it must not mask a pricing gap."""
+    orch = Orchestrator.__new__(Orchestrator)
+    lc = orch._to_lookup_competitor(
+        "fragante",
+        "Fragante",
+        {
+            "name": "Fragante",
+            "description": "d",
+            "pricingTier": "unknown",
+            "sources": [],
+        },
+        "web",
+    )
+    gap = Orchestrator._requested_metric_gap("pricing", [lc])
+    assert gap is not None
+    assert gap.field == "pricingTier"
 
 
 def test_color_for_is_deterministic():

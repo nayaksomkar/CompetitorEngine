@@ -147,6 +147,15 @@ _LOOKUP_WH_DELAY_S = 1.0
 _LOOKUP_LLM_RETRIES = 2
 _LOOKUP_LLM_DELAY_S = 0.5
 
+# Total wall-time budget for the WebHunter retry loop. Measured
+# legacy WebHunter latency: ~7s on fast transient failures,
+# ~29-50s on successful crawls. Retrying fast failures is cheap
+# and genuinely helps (upstream search flakiness is transient);
+# retrying 45s timeouts burns the request budget, so once the
+# budget is spent remaining retries are skipped and the entity
+# is reported partial instead of timing out the whole request.
+_LOOKUP_WH_BUDGET_S = 80.0
+
 # Lookup budget: cap each request at 3 WebHunter searches so one
 # user message naming 3 new companies stays under the cap (§12).
 _MAX_LOOKUP_BUDGET = 3
@@ -167,6 +176,33 @@ _MESSAGE_STOPWORDS = {
     "it", "its", "list", "a", "an", "please", "show", "for", "with",
     "between", "my", "our", "your", "their", "i", "we", "you", "they",
 }
+
+# Metric hints: "what is the market share of X" must research
+# market share, not a generic profile (§7 question alignment).
+_METRIC_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("market share", "market_share"),
+    ("marketshare", "market_share"),
+    ("pricing", "pricing"),
+    ("price", "pricing"),
+    ("cost", "pricing"),
+    ("funding", "funding"),
+    ("valuation", "funding"),
+    ("headquarters", "funding"),
+)
+
+
+def _detect_metric(message: str) -> str:
+    """Return the metric the user asked about, if any.
+
+    Maps a free-text question onto one of the WebHunter §5.1
+    query templates so the upstream research targets the
+    requested data point. Defaults to a generic profile.
+    """
+    text = (message or "").lower()
+    for needle, metric in _METRIC_PATTERNS:
+        if needle in text:
+            return metric
+    return "profile"
 
 
 @dataclass
@@ -579,6 +615,7 @@ class Orchestrator:
                 summary=chat_result.answer,
                 competitors=entities,
                 comparedTo=[],
+                question=message or None,
                 sources=chat_result.sources,
             )
             counts = ResultCounts(
@@ -620,6 +657,17 @@ class Orchestrator:
         for e in entities:
             all_sources.extend(e.sources)
 
+        # If the user asked for a specific metric and the evidence
+        # did not yield it, report the field as unavailable in the
+        # existing missing_data contract — never invent a value
+        # to make the response look complete (§11).
+        metric_gap = self._requested_metric_gap(
+            _detect_metric(message), entities
+        )
+        missing = list(resolved.missing_data)
+        if metric_gap is not None:
+            missing.append(metric_gap)
+
         counts = ResultCounts(
             requested=len(resolved.mentions),
             retrieved=len(entities),
@@ -632,15 +680,16 @@ class Orchestrator:
         )
         return ParserOutput(
             intent=parser_input.intent,
-            status="partial" if resolved.missing_data else "success",
+            status="partial" if missing else "success",
             data=self._analysis_from_dict(current),
             answer=AnswerBlock(
                 summary=summary,
                 competitors=primary,
                 comparedTo=compared,
+                question=message or None,
                 sources=all_sources,
             ),
-            missing_data=resolved.missing_data,
+            missing_data=missing,
             context_update=self._context_from_dict(resolved.context_update),
             evicted_entities=resolved.evicted,
             result_counts=counts,
@@ -935,12 +984,22 @@ class Orchestrator:
             return resolved
         resolved.attempted = True
 
+        # Preserve what the user actually asked for: a market-share
+        # question must drive a market-share WebHunter query, not a
+        # generic profile search (§7 entity/question alignment).
+        metric = _detect_metric(message)
+        if metric != "profile":
+            log = logger.bind(metric=metric)
+            log.info("lookup_metric_detected")
+
         # 3. Look up each needs-lookup entity (§5.1 steps 2-3),
         #    in parallel, under the lookup budget.
         budget = to_lookup[:_MAX_LOOKUP_BUDGET]
         results = await asyncio.gather(
             *[
-                self._lookup_entity(c, industry, parser_input.session_id)
+                self._lookup_entity(
+                    c, industry, metric, parser_input.session_id
+                )
                 for c in budget
             ],
             return_exceptions=True,
@@ -959,15 +1018,21 @@ class Orchestrator:
                 )
                 continue
             if res is None:
-                # WebHunter never returned sources — the entity
-                # failed. Skip it and report (§7.2 failure isolation).
+                # WebHunter never returned usable sources — the
+                # entity failed. Skip it and report (§7.2 failure
+                # isolation). Cause is genuinely ambiguous
+                # (transport timeout, upstream-reported failure,
+                # or zero results — WebHunter search flakiness was
+                # observed to be transient), so the report names
+                # all three instead of guessing "timeout".
                 resolved.missing_data.append(
                     MissingData(
                         field=f"competitors[{company}]",
                         reason=(
-                            f"WebHunter timeout after "
-                            f"{_LOOKUP_WH_RETRIES} attempts — "
-                            f"no sources for {company}"
+                            f"No sources found for {company} after "
+                            f"{_LOOKUP_WH_RETRIES + 1} WebHunter "
+                            f"attempts (timeout, upstream error, or "
+                            f"no results)"
                         ),
                         severity="warning",
                     )
@@ -1006,6 +1071,7 @@ class Orchestrator:
         self,
         company: str,
         industry: str,
+        metric: str = "profile",
         session_id: str | None = None,
     ) -> LookupCompetitor | None:
         """Look up a single company (§5.1 steps 2-3).
@@ -1013,15 +1079,27 @@ class Orchestrator:
         WebHunter search (2 retries / 1s) → LLMPing extraction
         (2 retries / 500ms, fallback: raw sources only). Returns
         None when WebHunter yields no sources — the entity failed
-        and the caller skips it (§7.2).
+        and the caller skips it (§7.2). `metric` steers the
+        WebHunter query toward the user's requested data point.
         """
-        log = logger.bind(company=company)
+        log = logger.bind(company=company, metric=metric)
 
         sources: list[dict[str, Any]] = []
+        loop_start = time.monotonic()
         for attempt in range(_LOOKUP_WH_RETRIES + 1):
+            if attempt > 0 and (
+                time.monotonic() - loop_start > _LOOKUP_WH_BUDGET_S
+            ):
+                # Budget spent — remaining retries would push the
+                # request past platform limits. Report what failed.
+                log.warning(
+                    "lookup_webhunter_budget_exhausted",
+                    attempts_left=_LOOKUP_WH_RETRIES - attempt + 1,
+                )
+                break
             try:
                 sources = await self.webhunter.search_company(
-                    company, industry
+                    company, industry, metric
                 )
                 break
             except WebHunterError as e:
@@ -1071,6 +1149,50 @@ class Orchestrator:
         return self._to_lookup_competitor(slug, name, profile, "web")
 
     # ── Entity extraction & reference resolution ───────────────
+    @staticmethod
+    def _requested_metric_gap(
+        metric: str, entities: list[LookupCompetitor]
+    ) -> MissingData | None:
+        """Report a user-requested metric as unavailable when the
+        resolved entities carry no evidence-backed value for it.
+
+        Mechanical check on the resolved profiles — the orchestrator
+        neither guesses a value nor silently drops the question's
+        data point (PARSER.md §11, ORCHESTRATOR.md §7).
+        """
+        if metric == "profile" or not entities:
+            return None
+        names = ", ".join(e.name for e in entities)
+        if metric == "market_share":
+            found = any(
+                e.profile.marketShare is not None for e in entities
+            )
+            field, label = "marketShare", "market-share"
+        elif metric == "pricing":
+            # "unknown" is the extraction schema's explicit
+            # no-data value (§5.1) — not real pricing evidence.
+            found = any(
+                e.profile.pricingTier
+                and e.profile.pricingTier.lower() != "unknown"
+                for e in entities
+            )
+            field, label = "pricingTier", "pricing"
+        elif metric == "funding":
+            found = any(e.profile.funding for e in entities)
+            field, label = "funding", "funding"
+        else:
+            return None
+        if found:
+            return None
+        return MissingData(
+            field=field,
+            reason=(
+                f"No reliable {label} data found in sources "
+                f"for {names}"
+            ),
+            severity="info",
+        )
+
     def _extract_company_mentions(
         self,
         message: str,
@@ -1375,6 +1497,8 @@ class Orchestrator:
             "description": p.description,
             "pricingTier": p.pricingTier,
             "marketPosition": p.marketPosition,
+            "marketShare": p.marketShare,
+            "growthRate": p.growthRate,
             "strengths": p.strengths,
             "weaknesses": p.weaknesses,
             "funding": p.funding,
@@ -1441,7 +1565,14 @@ class Orchestrator:
         self, competitors: list[Competitor]
     ) -> None:
         """Clamp shares to 0-100 and redistribute so they sum to
-        100 (PARSER.md §4.1 'calculate', ±1 rounding tolerance)."""
+        100 (PARSER.md §4.1 'calculate', ±1 rounding tolerance).
+
+        Redistribution only applies when at least two competitors
+        carry a non-zero share — a real distribution. A single
+        lone value (e.g. one 30% among unknowns) is evidence of
+        that company's share, not of the whole market; scaling it
+        to 100% would fabricate a number the sources never gave.
+        """
         if not competitors:
             return
         for c in competitors:
@@ -1451,6 +1582,10 @@ class Orchestrator:
             # No share data at all — leave the zeros. An equal
             # split would fabricate values the upstream never
             # provided (PARSER.md §11: no hallucinated filler).
+            return
+        non_zero = sum(1 for c in competitors if c.marketShare > 0)
+        if non_zero < 2:
+            # Lone partial evidence — keep the raw clamped value.
             return
         if abs(total - 100.0) <= 1.0:
             return
@@ -2011,6 +2146,18 @@ class Orchestrator:
             return default
 
     @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        """Float or None — unlike _to_float, missing/invalid stays
+        None so an absent metric is reported as unavailable rather
+        than fabricated as 0 (PARSER.md §11: no hallucinated filler)."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _canon(value: Any, valid: set[str], default: str) -> str:
         """Canonicalize an enum-ish string; unknown → default."""
         if not value:
@@ -2094,6 +2241,17 @@ class Orchestrator:
             summary=str(llm_response.get("business_summary") or ""),
         )
 
+        # LLMPing output hardening: a scalar where a list/dict is
+        # expected must degrade to empty, not crash response
+        # construction (a string "gaps" would otherwise iterate
+        # into single characters) — task: never trust LLM shape.
+        market_info_raw = llm_response.get("market_info")
+        market_info = (
+            market_info_raw
+            if isinstance(market_info_raw, dict)
+            else {}
+        )
+
         return AnalysisResult(
             business_summary=(
                 str(llm_response.get("business_summary") or "")
@@ -2101,13 +2259,13 @@ class Orchestrator:
             ),
             profile=profile,
             executive_summary=str(llm_response.get("executive_summary") or ""),
-            market_info=llm_response.get("market_info") or {},
+            market_info=market_info,
             positioning=str(llm_response.get("positioning") or ""),
-            gaps=[str(g) for g in llm_response.get("gaps", []) or []],
-            opportunities=[
-                str(o) for o in llm_response.get("opportunities", []) or []
-            ],
-            risks=[str(r) for r in llm_response.get("risks", []) or []],
+            gaps=self._string_list(llm_response.get("gaps")),
+            opportunities=self._string_list(
+                llm_response.get("opportunities")
+            ),
+            risks=self._string_list(llm_response.get("risks")),
             competitors=[
                 self._to_competitor(c)
                 for c in llm_response.get("competitors", []) or []
@@ -2389,6 +2547,18 @@ class Orchestrator:
                 out.append(str(item["point"]))
         return out
 
+    @staticmethod
+    def _string_list(raw: Any) -> list[str]:
+        """String-list coercion for LLMPing fields.
+
+        Only real lists are accepted; a scalar (e.g. the string
+        "big market" where a list was expected) degrades to empty
+        rather than iterating into single characters.
+        """
+        if not isinstance(raw, list):
+            return []
+        return [str(x) for x in raw if x is not None]
+
     def _to_explanation(self, raw: Any) -> Explanation | None:
         """Accept an Explanation dict or a plain string."""
         if raw is None or raw == "":
@@ -2473,13 +2643,24 @@ class Orchestrator:
                 pricingTier=str(
                     profile.get("pricingTier")
                     or profile.get("pricing_tier")
-                    or profile.get("pricingTier")
                     or ""
                 ),
                 marketPosition=str(
                     profile.get("marketPosition")
                     or profile.get("market_position")
                     or ""
+                ),
+                # Evidence-backed metrics: None when the extraction
+                # did not find a value — never defaulted to 0.
+                marketShare=self._optional_float(
+                    profile.get("marketShare")
+                    if "marketShare" in profile
+                    else profile.get("market_share")
+                ),
+                growthRate=self._optional_float(
+                    profile.get("growthRate")
+                    if "growthRate" in profile
+                    else profile.get("growth_rate")
                 ),
                 strengths=[
                     str(s) for s in profile.get("strengths") or []
@@ -2518,6 +2699,16 @@ class Orchestrator:
             funding=p.funding,
             founded=p.founded,
             hq=p.hq,
+            # Only overwrite with evidence-backed values; the
+            # Competitor contract defaults unknown shares to 0
+            # (PARSER.md §4.1) but we must not turn None into 0
+            # when a real value exists upstream.
+            marketShare=(
+                p.marketShare if p.marketShare is not None else 0.0
+            ),
+            growthRate=(
+                p.growthRate if p.growthRate is not None else 0.0
+            ),
             pricingTier=p.pricingTier,
             marketPosition=p.marketPosition,
             strengths=p.strengths,

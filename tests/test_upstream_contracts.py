@@ -462,3 +462,98 @@ async def test_webhunter_search_company_raises_on_error():
     with pytest.raises(WebHunterError):
         await wh.search_company("Fragante", "Fragrance")
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_webhunter_search_company_sends_bounding_params():
+    """The lookup request must carry the documented bounding
+    parameters (max_pages, timeout_ms) so WebHunter cannot crawl
+    unboundedly on thin-result entities."""
+    captured: dict[str, Any] = {}
+    app = FastAPI()
+
+    @app.post("/research/sync")
+    async def sync(payload: dict):
+        captured["payload"] = payload
+        return {"status": "completed", "search_results": []}
+
+    transport = httpx.ASGITransport(app=app)
+    client = httpx.AsyncClient(
+        transport=transport, base_url="http://fake-upstream"
+    )
+    wh = WebHunterClient(base_url="http://fake-upstream")
+    wh._client = client
+    await wh.search_company("Fragante", "Fragrance")
+    await client.aclose()
+    assert captured["payload"]["max_pages"] == 5
+    assert captured["payload"]["timeout_ms"] == 30000
+
+
+@pytest.mark.asyncio
+async def test_webhunter_search_company_relevance_first():
+    """Sources mentioning the requested company come first; the
+    rest are preserved after them (partially relevant evidence
+    is kept, not dropped)."""
+    app = FastAPI()
+
+    @app.post("/research/sync")
+    async def sync(payload: dict):
+        return {
+            "status": "completed",
+            "search_results": [
+                {
+                    "url": "https://unrelated.com/x",
+                    "title": "Something else",
+                    "snippet": "not about the company",
+                },
+                {
+                    "url": "https://a.com/fragante-news",
+                    "title": "Fragante launches new line",
+                    "snippet": "coverage of Fragante",
+                },
+                {
+                    "url": "https://b.com/fragante-review",
+                    "title": "Review site",
+                    "snippet": "Fragante pricing analysis",
+                },
+            ],
+        }
+
+    transport = httpx.ASGITransport(app=app)
+    client = httpx.AsyncClient(
+        transport=transport, base_url="http://fake-upstream"
+    )
+    wh = WebHunterClient(base_url="http://fake-upstream")
+    wh._client = client
+    sources = await wh.search_company("Fragante", "Fragrance")
+    await client.aclose()
+
+    assert len(sources) == 3
+    assert sources[0]["url"] == "https://a.com/fragante-news"
+    assert sources[1]["url"] == "https://b.com/fragante-review"
+    assert sources[2]["url"] == "https://unrelated.com/x"
+
+
+@pytest.mark.asyncio
+async def test_webhunter_search_company_raises_on_upstream_failed():
+    """An upstream-reported failure must raise (so the
+    orchestrator's retry policy applies), not return []."""
+    app = FastAPI()
+
+    @app.post("/research/sync")
+    async def sync(payload: dict):
+        return {
+            "status": "failed",
+            "search_results": [],
+            "error": "no search results returned",
+        }
+
+    transport = httpx.ASGITransport(app=app)
+    client = httpx.AsyncClient(
+        transport=transport, base_url="http://fake-upstream"
+    )
+    wh = WebHunterClient(base_url="http://fake-upstream")
+    wh._client = client
+    with pytest.raises(WebHunterError, match="no search results"):
+        await wh.search_company("Fragante", "Fragrance")
+    await client.aclose()

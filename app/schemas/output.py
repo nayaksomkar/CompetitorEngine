@@ -88,11 +88,18 @@ class AnalysisResult(BaseModel):
 
 # ── Answer block (ORCHESTRATOR.md §5.2) ────────────
 class LookupProfile(BaseModel):
-    """Profile of a looked-up competitor."""
+    """Profile of a looked-up competitor.
+
+    marketShare / growthRate are None when the upstream evidence
+    did not yield a value — never defaulted to 0, which would
+    fabricate a share the sources do not support (PARSER.md §11).
+    """
 
     description: str = ""
     pricingTier: str = ""
     marketPosition: str = ""
+    marketShare: float | None = None
+    growthRate: float | None = None
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
     funding: str | None = None

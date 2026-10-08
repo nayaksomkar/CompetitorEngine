@@ -285,27 +285,49 @@ class WebHunterClient:
         self,
         company: str,
         industry: str = "",
+        metric: str = "profile",
         max_results: int = 8,
     ) -> list[dict[str, Any]]:
         """Search the web for a single company profile.
 
-        Uses the §5.1 query template and returns the top
-        sources (up to 5, deduplicated by domain) as
-        `{url, title, snippet}` dicts. Raises WebHunterError
-        on transport failures so the orchestrator's retry
-        policy applies; an empty list means "no results".
+        Uses the §5.1 query templates and returns the top
+        sources (up to 5, deduplicated by domain, entity-
+        relevant results first) as `{url, title, snippet}`
+        dicts. `metric` steers the query toward what the user
+        actually asked for (market share, pricing, funding).
+        Raises WebHunterError on transport failures AND on
+        upstream-reported failures so the orchestrator's retry
+        policy applies; an empty list means "completed with no
+        results".
         """
         base_url = await self._ensure_base_url()
         client = await self._get_client()
         url = f"{base_url}/research/sync"
 
-        query = _company_query(company, industry)
-        log = logger.bind(url=url, company=company)
-        body = {"query": query, "max_results": max_results}
+        query = _company_query(company, industry, metric)
+        log = logger.bind(url=url, company=company, metric=metric)
+        # Documented WebHunter request contract (FORbacked.md §8):
+        # max_results 8, max_pages 5, timeout_ms 30000. Passing
+        # timeout_ms bounds a runaway crawl inside WebHunter —
+        # without it an entity with thin results was observed to
+        # block for >90s; with it the same query returns in ≤45s.
+        body = {
+            "query": query,
+            "max_results": max_results,
+            "max_pages": 5,
+            "timeout_ms": 30000,
+        }
         log.info("webhunter_company_search", query_chars=len(query))
 
+        # Successful lookups were observed to take 27-43s end to
+        # end (WebHunter crawls synchronously). The default 30s
+        # client timeout truncated real successful responses, so
+        # the lookup path allows 45s per attempt; retries stay
+        # bounded by the orchestrator's §7.1 policy.
         try:
-            response = await client.post(url, json=body)
+            response = await client.post(
+                url, json=body, timeout=_LOOKUP_HTTP_TIMEOUT_S
+            )
             response.raise_for_status()
             data = response.json() if response.content else {}
             log.info(
@@ -313,13 +335,16 @@ class WebHunterClient:
                 status=response.status_code,
             )
             if data.get("status") == "failed" or data.get("error"):
-                log.warning(
-                    "webhunter_company_failed",
-                    error=data.get("error"),
+                # Upstream-reported failure (e.g. "no search
+                # results"). Raise — not return [] — so the
+                # orchestrator's retry policy applies and the
+                # eventual missing_data carries the real cause.
+                raise WebHunterError(
+                    f"WebHunter lookup failed: "
+                    f"{data.get('error') or data.get('errors')}"
                 )
-                return []
             return _dedupe_sources(
-                data.get("search_results") or []
+                data.get("search_results") or [], company=company
             )
         except httpx.TimeoutException as e:
             log.error("webhunter_company_timeout", error=str(e))
@@ -344,20 +369,25 @@ class WebHunterClient:
             ) from e
 
 
-# §5.1 query templates — the orchestrator picks the best
-# one for the user's industry context; the profile
-# template is the default for company lookups.
-_COMPANY_QUERY_TEMPLATES = (
-    "{company} company profile {industry}",
-    "{company} pricing {industry}",
-    "{company} competitors market share",
-    "{company} funding headquarters",
-)
+# Per-attempt HTTP timeout for company lookups (see search_company).
+_LOOKUP_HTTP_TIMEOUT_S = 45
+
+# §5.1 query templates — the orchestrator picks the one that
+# matches the user's requested metric so the question ("what is
+# the market share of X") survives into the research request.
+_QUERY_TEMPLATES: dict[str, str] = {
+    "profile": "{company} company profile {industry}",
+    "market_share": "{company} competitors market share {industry}",
+    "pricing": "{company} pricing {industry}",
+    "funding": "{company} funding headquarters",
+}
 
 
-def _company_query(company: str, industry: str = "") -> str:
-    """Build the §5.1 lookup query for a company."""
-    template = _COMPANY_QUERY_TEMPLATES[0]
+def _company_query(
+    company: str, industry: str = "", metric: str = "profile"
+) -> str:
+    """Build the §5.1 lookup query for a company + requested metric."""
+    template = _QUERY_TEMPLATES.get(metric) or _QUERY_TEMPLATES["profile"]
     return template.format(
         company=company, industry=industry or "the industry"
     ).strip()
@@ -365,15 +395,31 @@ def _company_query(company: str, industry: str = "") -> str:
 
 def _dedupe_sources(
     search_results: list[Any],
+    company: str = "",
     keep: int = 5,
 ) -> list[dict[str, Any]]:
     """Keep the top `keep` results, deduplicated by domain.
 
-    WebHunter returns up to 8 results in relevance order;
-    §5.1 keeps the top 5 by relevance with domains
-    deduplicated.
+    WebHunter returns up to 8 results in relevance order; §5.1
+    keeps the top 5 by relevance with domains deduplicated.
+    Results whose title/snippet/url mention the requested
+    company are preferred (a result is not evidence merely
+    because WebHunter returned it), but non-matching results
+    are kept afterward rather than dropped so partially
+    relevant evidence survives.
     """
-    out: list[dict[str, Any]] = []
+    needle = (company or "").strip().lower()
+
+    def _mentions_company(r: dict[str, Any]) -> bool:
+        if not needle:
+            return False
+        haystack = " ".join(
+            str(r.get(k) or "") for k in ("title", "snippet", "url")
+        ).lower()
+        return needle in haystack
+
+    relevant: list[dict[str, Any]] = []
+    other: list[dict[str, Any]] = []
     seen_domains: set[str] = set()
     for r in search_results:
         if not isinstance(r, dict):
@@ -385,13 +431,12 @@ def _dedupe_sources(
         if domain in seen_domains:
             continue
         seen_domains.add(domain)
-        out.append(
-            {
-                "url": url,
-                "title": r.get("title") or "",
-                "snippet": r.get("snippet") or "",
-            }
-        )
-        if len(out) >= keep:
-            break
-    return out
+        item = {
+            "url": url,
+            "title": r.get("title") or "",
+            "snippet": r.get("snippet") or "",
+        }
+        (relevant if _mentions_company(item) else other).append(item)
+
+    out = relevant + other
+    return out[:keep]
