@@ -2,7 +2,7 @@
 
 > Purpose: document **how backend-provided values are used and displayed in the UI**, so a backend developer knows exactly what the frontend expects and how each value ultimately appears to the user.
 >
-> Sources used (and only these): `README.md`, `ORCHESTRATOR.md`, `ORCHESTRATOR_PROMPT.md`, `PARSER.md`, `DOCKER.md`.
+> Sources used (and only these): `README.md`, `ORCHESTRATOR.md`, `PARSER.md`, `DOCKER.md`, `SERVICES.md`.
 > (The `.kilo/worktrees/soft-hornet/` copies of these files are byte-identical; `.aider.chat.history.md` is a tool session log with no project documentation; `.commandcode/taste/` files are tool configuration, not project docs.)
 
 ---
@@ -13,7 +13,7 @@
 |---|---|---|
 | `PARSER.md` | UI data inventory — per-field display rules, validation, defaults | **Authoritative for UI rendering/formatting** |
 | `ORCHESTRATOR.md` | Current API contract (`/api/v1/parser/execute`), response envelope, field→UI mapping, error handling | **Authoritative for API contract** |
-| `ORCHESTRATOR_PROMPT.md` | Backend build spec for the orchestrator (same contract as `ORCHESTRATOR.md`, plus WebHunter/LLMPing internals) | Authoritative (consistent with `ORCHESTRATOR.md`) |
+| `SERVICES.md` | Live WebHunter / LLMPing wire contracts and client seams | Supporting |
 | `DOCKER.md` | Ops/deployment, WebHunter API reference, env vars | Supporting |
 | `README.md` | App overview + **legacy** backend wiring (`/api/v1/analyze`, old chart schema) | Legacy — predates the orchestrator (see Conflict C1) |
 
@@ -25,7 +25,7 @@
 
 ### C1 — API endpoint: `/api/v1/analyze` vs `/api/v1/parser/execute`
 - **README.md**: `POST /api/v1/analyze` with `{business_name, idea, industry, competitors, research_goals}`.
-- **ORCHESTRATOR.md / ORCHESTRATOR_PROMPT.md / PARSER.md**: `POST /api/v1/parser/execute` with `{parser_input: {intent, ...}}`.
+- **ORCHESTRATOR.md / PARSER.md**: `POST /api/v1/parser/execute` with `{parser_input: {intent, ...}}`.
 - **Resolution:** `ORCHESTRATOR.md` §14.1 explicitly documents the migration "From `/api/v1/analyze` to `/api/v1/parser/execute`". **`/api/v1/parser/execute` is the current authoritative endpoint.** The README documents the legacy integration path only.
 
 ### C2 — Chart schema: `datasets` vs `series`
@@ -40,13 +40,13 @@
 - **Resolution:** `PARSER.md` provides the only complete, field-level Report UI contract, so `reports[]` (array of Report objects) is the documented UI shape. **The reconciliation between `ORCHESTRATOR.md`'s `report` string and `PARSER.md`'s `reports[]` array is Undetermined** — no document describes a transformation from a report string into Report objects.
 
 ### C4 — `pricingTier` enum: "Mid-range" vs "Mid" — **Undetermined (cosmetic)**
-- **ORCHESTRATOR.md §5.1 / ORCHESTRATOR_PROMPT.md (LLMPing schema)**: `Premium | Mid-range | Budget | Ultra-Premium | unknown`.
+- **ORCHESTRATOR.md §5.1 (LLMPing schema)**: `Premium | Mid-range | Budget | Ultra-Premium | unknown`.
 - **PARSER.md §9 (normalization)**: `Budget, Mid, Premium, Ultra-Premium`.
 - **Resolution:** Undetermined. The UI displays the raw string in a gray badge (PARSER.md §2.2), so both values render identically; the canonical enum value sent by the backend is not settled by the docs.
 
 ### C5 — Required request fields
 - **PARSER.md §2.1** marks `targetCustomers` as Required = Yes.
-- **README.md** says "Only `business_name`, `idea`, and `industry` are required"; the executable test requests in `ORCHESTRATOR.md` §13.2 and `ORCHESTRATOR_PROMPT.md` §2 send only `business_name`, `idea`, `industry` and succeed.
+- **README.md** says "Only `business_name`, `idea`, and `industry` are required"; the executable test requests in `ORCHESTRATOR.md` §13.2 send only `business_name`, `idea`, `industry` and succeed.
 - **Resolution:** The executable examples are authoritative for the minimum: **`business_name`, `idea`, `industry` are required; everything else is optional.** `PARSER.md`'s "Required" column for `targetCustomers` appears overstated (it is "used for analysis context").
 
 ### C6 — Health response shape
@@ -61,7 +61,7 @@
 
 ### C8 — `data` payload for `question` intents
 - **ORCHESTRATOR.md §5.2**: `"data": { /* existing analysis, unchanged for question intents */ }`.
-- **ORCHESTRATOR_PROMPT.md** example response: `"data": null`.
+- **ORCHESTRATOR.md** example response: `"data": null`.
 - **Resolution:** The UI must handle both — `ORCHESTRATOR.md` §9.2/§9.3 sample code checks `data?.competitors` **and** `answer?.competitors` independently and renders whichever is present.
 
 ---
@@ -175,7 +175,6 @@ For web-looked-up entities (`source: "web"`), `lookupConfidence` (0–100) is in
 | 422 | "Invalid request format" |
 | 500 | "Service unavailable, try again" |
 | 502 | "Research service down, partial data available" |
-| 504 | "Couldn't look up {entity}, skipping" (**dynamic**: `{entity}` interpolated) |
 
 ### 5.4 Envelope field → UI mapping (ORCHESTRATOR.md §10)
 
@@ -409,7 +408,7 @@ Legacy README chart example (for reference, old schema): `{ "chart_type": "bar",
 | `snippet` | string (optional) | Body text | Direct | Optional |
 | `url` | string (optional) | External link icon | Presence → icon rendered | Optional — absent → no link icon |
 
-WebHunter search results (internal to backend, ORCHESTRATOR.md §5.1 / ORCHESTRATOR_PROMPT.md) have the same shape: `{title, url, snippet, publisher, date}` — up to 8 returned, top 5 kept by relevance, deduplicated by domain. These flow into `sources[]` and per-entity `sources[]`.
+WebHunter search results (internal to backend, ORCHESTRATOR.md §5.1) have the same shape: `{title, url, snippet, publisher, date}` — up to 8 returned, top 5 kept by relevance, deduplicated by domain. These flow into `sources[]` and per-entity `sources[]`.
 
 Dynamic limits: 4–6 sources (static sample: 8). Retry policy: 0 retries — on failure, **omit sources** (§4.2).
 
@@ -444,7 +443,7 @@ Populated for `question` / `compare` / `explain` intents; `null` for bootstrap (
 | `answer.evidence[]` | array | (explain intent) | Badge + detail pairs | null |
 | `answer.sources[]` | array | Per-lookup source list, shown at bottom (§9.2) | §6.10 rendering | null |
 
-Example (ORCHESTRATOR_PROMPT.md): `answer.competitors[0].name === "Fragante"`, `source: "web"`, `lookupConfidence: 78`, with ≥2 sources expected in `answer.sources` (§13.3).
+Example (ORCHESTRATOR.md): `answer.competitors[0].name === "Fragante"`, `source: "web"`, `lookupConfidence: 78`, with ≥2 sources expected in `answer.sources` (§13.3).
 
 ### 6.14 Orchestrator-only `data` fields (ORCHESTRATOR.md §6.1) — no PARSER.md UI inventory
 
@@ -531,7 +530,7 @@ Values originating from the API/backend (summary — full per-field detail in §
 - Diagnostics: `missing_data[].{field, reason, severity}`, `evicted_entities[]`, `error`, `operations_performed[]`, `derived_data`, `ui_state.{active_tab, highlighted_entities}`.
 - Session context: `context_update` (stored in sessionStorage, echoed back).
 - Orchestrator-only fields listed in §6.14 (business_summary, market_info, metadata, etc.).
-- Internal pipeline values that never reach the UI directly: WebHunter query templates (`"{company} company profile {industry}"`, `"{company} pricing {industry}"`, `"{company} competitors market share"`, `"{company} funding headquarters"`), WebHunter request `{query, max_results: 8, max_pages: 5, variants, region: "wt-wt", timeout_ms: 30000}`, LLMPing extraction schema (`confidence` 0–100, `sourceCount`), env vars (`LLMPING_URL`, `WEBHUNTER_URL`, `LLMPING_TIMEOUT` 60s, `WEBHUNTER_TIMEOUT` 30s, `SERVICE_HOST`, `SERVICE_PORT`, `LOG_LEVEL`, `LLMPING_API_KEY` sent as `Authorization: Bearer ...`).
+- Internal pipeline values that never reach the UI directly: WebHunter query templates (`"{company} company profile {industry}"`, `"{company} pricing {industry}"`, `"{company} competitors market share"`), WebHunter request `{query, max_results: 8, max_pages: 5, timeout_ms: 30000}`, LLMPing extraction schema (`confidence` 0–100, `sourceCount`), env vars (`LLMPING_URL`, `WEBHUNTER_URL`, `LLMPING_TIMEOUT` 60s, `WEBHUNTER_TIMEOUT` 75s, `SERVICE_HOST`, `SERVICE_PORT`, `LOG_LEVEL`, `LLMPING_API_KEY` sent as `Authorization: Bearer ...`).
 
 ---
 
@@ -557,7 +556,6 @@ Values the **frontend** calculates/formats/combines from backend data (per PARSE
 | `lookupConfidence` badge | `lookupConfidence` | subtle badge when < 60 |
 | Warnings list | `missing_data[]` | `filter(m => m.severity === 'warning')` (ORCHESTRATOR.md §9.3) |
 | Eviction toast text | `evicted_entities[]` | "{EntityName} moved to history" (entity name interpolated, ORCHESTRATOR.md §8.4) |
-| 504 error text | HTTP 504 + entity | "Couldn't look up {entity}, skipping" |
 
 Backend-side derived values (calculated by the parser/orchestrator, not the UI): `marketShare` normalization to sum 100 (§4.1, "calculate" operation), chart generation from raw metrics (§10), slug IDs from names, `result_counts`, `derived_data`, `ui_state`.
 
@@ -575,7 +573,7 @@ Backend-side derived values (calculated by the parser/orchestrator, not the UI):
 | Zero competitors available | Empty state ("If 0 are available, render the empty state") | PARSER.md §14 |
 | `status: "partial"` | Valid data rendered + warnings from `missing_data` (severity "warning") | ORCHESTRATOR.md §6.2, §9.3 |
 | `status: "error"` | Error state; any valid data preserved | ORCHESTRATOR.md §6.2 |
-| HTTP 422 / 500 / 502 / 504 | Static error strings (§5.3) | ORCHESTRATOR.md §11.1 |
+| HTTP 422 / 500 / 502 | Static error strings (§5.3) | ORCHESTRATOR.md §11.1 |
 | Evicted entity | One-line toast "{name} moved to history" + "undo" (re-sends same `refine` request) | ORCHESTRATOR.md §8.4, §14.4 |
 | `lookupConfidence < 60` | Subtle confidence badge | ORCHESTRATOR.md §6.3 |
 | `insights[].explanation` absent | No "Explain this" content (field optional) | PARSER.md §2.6 |
@@ -589,7 +587,7 @@ Degradation priority (PARSER.md §4.6): `Complete data → Partial but useful da
 
 Every placeholder/dynamic value mentioned in the docs, with the 6 required points:
 
-1. **`{entity}` in "Couldn't look up {entity}, skipping"** — Provided by: HTTP 504 path, entity name from the failed lookup. Expected: company name string. Appears: error message. Formatted: interpolated into static sentence. Unavailable: not applicable (message only exists on failure). Real backend value (dynamic interpolation into static UI text).
+1. **`{entity}` in `missing_data[].field` (e.g. `competitors[fragante]`)** — Provided by: failed-lookup entity slug. Expected: entity slug string. Appears: `missing_data` warning/error entries. Formatted: `competitors[<slug>]` field key. Unavailable: not applicable (entry only exists on failure). Real backend value (dynamic slug into a static field pattern).
 2. **`{publisher}` / `{date}` in "{publisher} · {date}"** — Provided by: `Source.publisher`, `Source.date`. Expected: strings. Appears: Sources list byline. Formatted: joined with " · ". Unavailable: both optional; omission rule not documented. Real backend values.
 3. **`{confidence}` in "{confidence}% confidence"** — Provided by: `insights[].confidence` (0–100). Appears: InsightCard. Formatted: number + "% confidence". Unavailable: clamped 0–100 per validation. Real backend value.
 4. **`{pages}` in "{pages} pages"** — Provided by: `reports[].pages`. Appears: ReportCard gray badge. Formatted: number + " pages". Unavailable: not documented. Real backend value.
@@ -705,4 +703,4 @@ Authoritative quick-reference. Fields marked *(legacy)* are from README.md's old
 
 ---
 
-*End of contract. Everything above is established solely from `README.md`, `ORCHESTRATOR.md`, `ORCHESTRATOR_PROMPT.md`, `PARSER.md`, and `DOCKER.md`; items the docs do not settle are marked **Undetermined** or "not documented" rather than guessed.*
+*End of contract. Everything above is established solely from `README.md`, `ORCHESTRATOR.md`, `PARSER.md`, `DOCKER.md`, and `SERVICES.md`; items the docs do not settle are marked **Undetermined** or "not documented" rather than guessed.*

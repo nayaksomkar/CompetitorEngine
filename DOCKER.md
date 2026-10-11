@@ -105,7 +105,7 @@ docker rm -f competitorengine llmping webhunter
 | `LLMPING_URL`     | no       | —       | Full URL to LLMPing. When unset, auto-discovers via `host.docker.internal:8000` → `llmping:8000` → `localhost:8000`. Production: `https://llmping.onrender.com` |
 | `WEBHUNTER_URL`   | no       | —       | Full URL to WebHunter. When unset, auto-discovers via `host.docker.internal:8765` → `webhunter:8000` → `localhost:8765`. Production: `https://webhunter-1v83.onrender.com` |
 | `LLMPING_TIMEOUT` | no       | 60      | Seconds per LLMPing request.             |
-| `WEBHUNTER_TIMEOUT` | no     | 30      | Seconds per WebHunter request.           |
+| `WEBHUNTER_TIMEOUT` | no     | 75      | httpx client-level default for WebHunter (per-request calls override it: research POSTs use 45s under a 90s batch budget, per-company lookups use 60s). |
 | `LLMPING_API_KEY` | no       | —       | Sent as `Authorization: Bearer ...`.      |
 | `REQUIRE_SERVICE_URLS` | no | `false` | Set `true` to fail fast if neither URL nor candidate answers. Default allows auto-discovery. |
 | `DISCOVERY_CANDIDATES_LLMPING` | no | — | CSV of extra LLMPing candidates prepended before defaults |

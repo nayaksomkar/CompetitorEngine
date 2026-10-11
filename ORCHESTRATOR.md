@@ -50,7 +50,7 @@ See `DOCKER.md` for the canonical port mapping. Quick reference:
 | `llmping`            | **8000**  | 8000           | LLM analysis            |
 | `webhunter`          | **8765**  | 8000           | Web search / harvesting |
 
-The orchestrator **refuses to start** without `LLMPING_URL` and `WEBHUNTER_URL` set.
+The orchestrator starts even when `LLMPING_URL` / `WEBHUNTER_URL` are unset; upstream URLs are then resolved lazily on first use (discovery order: explicit URL → `host.docker.internal` → Docker DNS service name → `localhost`). Set `REQUIRE_SERVICE_URLS=true` to restore the old fail-fast behavior.
 
 ---
 
@@ -162,12 +162,13 @@ This is the flow that handles queries like *"tell me about Fragante"*. The orche
    - Check against `context_update.entities.competitors`. Each entity is either `in_context` or `needs_lookup`.
 
 2. **For each `needs_lookup` entity, run a WebHunter search**
-   - Query templates (orchestrator chooses the best one based on the user's industry context):
+   - Query templates (orchestrator chooses the best one based on the user's industry context and the requested metric — `profile` / `pricing` / `market_share` / `funding`):
      - `"{company} company profile {industry}"`
      - `"{company} pricing {industry}"`
      - `"{company} competitors market share"`
      - `"{company} funding headquarters"`
-   - WebHunter returns up to N=8 sources with `{title, url, snippet, publisher, date}`.
+   - WebHunter returns up to N=8 sources with `{title, url, snippet, publisher, date}`, bounded by `max_pages: 5` / `timeout_ms: 30000`.
+   - Relevance-partitioned: results whose title/snippet actually mention the company come first; the rest are preserved after them (partial evidence is kept, not dropped). When *no* result mentions the company, only a small head sample (top 2) is passed downstream so name-collision junk is not treated as evidence.
    - Keep the top 5 by relevance; deduplicate by domain.
 
 3. **Ask LLMPing to extract a profile**
@@ -352,10 +353,9 @@ For web-looked-up entities (`source: "web"`), include `lookupConfidence` (0-100)
 | Operation                 | Max Retries | Delay | Fallback                  |
 |---------------------------|-------------|-------|---------------------------|
 | Bootstrap (full analysis) | 2           | 1s    | Return partial data       |
-| Chat question             | 1           | 500ms | Try WebHunter, then partial|
-| WebHunter search          | 2           | 1s    | Mark entity `failed`      |
-| LLMPing extraction        | 2           | 500ms | Use raw sources only      |
-| Single entity generation  | 1           | 500ms | Skip entity               |
+| WebHunter search (per entity) | 2       | 500ms | Mark entity `failed`      |
+| LLMPing extraction (per entity) | 2     | 500ms | Use raw sources only      |
+| Chat / explain / compare  | 0           | —     | Single attempt            |
 
 ### 7.2 Failure Isolation
 
@@ -578,7 +578,6 @@ function updateContext(response) {
 | 422  | Validation error (malformed request)          | Show "Invalid request format"                   |
 | 500  | Internal server error                         | Show "Service unavailable, try again"           |
 | 502  | Upstream service (WebHunter/LLMPing) failed   | Show "Research service down, partial data available" |
-| 504  | Lookup timeout (WebHunter > 10s × 2 retries)  | Show "Couldn't look up {entity}, skipping"      |
 
 ### 11.2 Structured Error Response
 

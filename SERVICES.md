@@ -171,14 +171,16 @@ Content-Type: application/json
 ```json
 {
   "query": "Research TestCo (industry: SaaS analytics; geography: Global; pricing: Subscription; business model: B2B SaaS). Cover: competitors and comparable companies. Return URLs, titles, snippets, and any crawled content.",
-  "max_results": 8
+  "max_results": 8,
+  "max_pages": 2,
+  "timeout_ms": 45000
 }
 ```
 
 **What the §5.1 per-company lookup sends** (`webhunter_client.search_company`):
 
 ```json
-{"query": "Fragante company profile Fragrance", "max_results": 8}
+{"query": "Fragante company profile Fragrance", "max_results": 8, "max_pages": 5, "timeout_ms": 30000}
 ```
 
 **Validation error** (`422`, missing `query`):
@@ -294,8 +296,8 @@ A per-URL scrape failure (DNS) still returns `200` with
    `query + " " + variant` to the search backend (observed
    `search_queries: ["Forest Essentials", "Forest Essentials Forest Essentials company", "Forest Essentials Forest Essentials funding"]`).
 4. **Timing regularly hits 30s.** Observed `elapsed_ms`: 8s (failed), 30s,
-   56s. One successful call took 30,069ms — exactly at the orchestrator's
-   current `webhunter_timeout = 30` setting.
+   56s. One successful call took 30,069ms — right at the orchestrator's
+   `webhunter_timeout` default.
 5. `max_results` is honored (asked 8, got 8). `search_queries` echoes the
    effective queries (single query unless `variants` given).
 6. `crawled_contents[].content` can be `"Just a moment..."` (Cloudflare
@@ -313,12 +315,17 @@ services directly.
 
 | Orchestrator need | Client method | Wire request | Response transformation |
 |---|---|---|---|
-| Bootstrap research | `research(business, research_types)` | `POST /research/sync` `{query, max_results: 8}` | `_adapt_response` → `{results: {<topic>: {sources[], crawled[], query, stats}}, raw}` — sources built from `search_results` (url/title/snippet), crawled text from `crawled_contents` |
-| Per-company lookup (§5.1) | `search_company(company, industry, max_results)` | `POST /research/sync` `{query: "<company> company profile <industry>", max_results}` | `_dedupe_sources` → top-5 `{url, title, snippet}`, deduplicated by domain |
+| Bootstrap research | `research(business, research_types)` | `POST /research/sync` `{query, max_results: 8, max_pages: 2, timeout_ms: 45000}` | `_adapt_response` → `{results: {<topic>: {sources[], crawled[], query, stats}}, raw}` — sources built from `search_results` (url/title/snippet), crawled text from `crawled_contents`; per-topic batches run with bounded concurrency (≤ 4) under a 90s batch budget; a failed batch is retried once with a changed query, then reported as `batch_statuses[<topic>].status = "failed"` (does **not** raise) |
+| Per-company lookup (§5.1) | `search_company(company, industry, metric)` | `POST /research/sync` `{query: "<company> <metric-aware template> <industry>", max_results: 8, max_pages: 5, timeout_ms: 30000}` | `_dedupe_sources` → top-5 `{url, title, snippet}`, deduplicated by domain, relevance-partitioned (results mentioning the company first; top-2 head sample when nothing matches) |
 
 Failure handling (verified against the live service):
-- `status == "failed"` or `error` set → logged, returned as empty results
+- `research()`: `status != "completed"` or `error` set → retried once with a
+  changed query, then returned as a `failed` batch status with empty results
   (does **not** raise) — the orchestrator treats it as "no data".
+- `search_company()`: upstream-reported failure (`status == "failed"` or
+  `error` set) → raises `WebHunterError` so the orchestrator's per-entity
+  retry policy applies (a silent `[]` would be indistinguishable from
+  "no results found").
 - `httpx.TimeoutException` / `HTTPStatusError` / `RequestError` → `WebHunterError`
   (raises); a connection error also resets `base_url` so the next call
   re-runs discovery.
@@ -339,7 +346,7 @@ Failure handling (verified against the live service):
 |---|---|---|
 | `LLMPING_URL` / `WEBHUNTER_URL` | `""` | Explicit upstream base URLs; when unset, lazy discovery probes the candidate lists |
 | `llmping_timeout` | `60` | httpx timeout for LLMPing |
-| `webhunter_timeout` | `30` | httpx timeout for WebHunter |
+| `webhunter_timeout` | `75` | httpx client-level default for WebHunter (per-request calls override it: research POSTs use a 45s timeout with a 90s batch budget, per-company lookups use 60s) |
 | `discovery_timeout_seconds` | `2.0` | Per-candidate probe timeout |
 | `discovery_candidates_llmping` / `_webhunter` | `""` | Extra CSV candidates probed before the built-ins |
 
@@ -359,13 +366,12 @@ deployment relying on the `webhunter:` hostname must actually listen on
 
 These come from live testing and define how the orchestrator must behave:
 
-1. **WebHunter's 30s sync duration vs the 30s orchestrator timeout.**
-   Successful sync calls regularly take 30-56s. At `webhunter_timeout = 30`
-   the orchestrator will time out on a large fraction of otherwise-successful
-   research calls (raising `WebHunterError`, which bootstrap then swallows
-   into "no research"). Either raise `WEBHUNTER_TIMEOUT` to ≥ 90s, constrain
-   the request (`max_pages: 1`, small `max_results`), or move to the async
-   `POST /research` + poll flow.
+1. **WebHunter's 30-56s sync duration vs per-request timeouts.**
+   Successful sync calls regularly take 30-56s. Research requests carry
+   a 45s per-request timeout under a 90s batch budget (per-company
+   lookups get 60s). If timeouts bite, raise `WEBHUNTER_TIMEOUT`,
+   further constrain the request (`max_pages: 1`, small `max_results`),
+   or move to the async `POST /research` + poll flow.
 2. **WebHunter is flaky (~17-40% "no search results returned").** The
    orchestrator's retry policy (2 retries) is load-bearing; consider a third
    retry, since failures are transient and cheap (~8s each).
