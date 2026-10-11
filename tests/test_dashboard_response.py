@@ -249,6 +249,23 @@ def make_parser_input(
     )
 
 
+def test_freeform_research_goals_map_to_supported_provider_topics():
+    form = make_form()
+    form.competitors = []
+    form.research_goals = [
+        "Understand independently discovered competitors, their products "
+        "and published pricing, positioning, and market opportunities."
+    ]
+
+    assert Orchestrator()._plan_research(form) == [
+        "competitor_research",
+        "product_research",
+        "pricing_research",
+        "customer_needs",
+        "source_verification",
+    ]
+
+
 # ── Contract constants (FORbacked.md §6.14 + Backend→UI) ──
 
 ENVELOPE_KEYS = {
@@ -409,8 +426,8 @@ async def test_response_contract_matches_frontend_canonical_mapper():
 
     source = payload["data"]["sources"][0]
     assert set(source) == SOURCE_KEYS
-    assert source["url"] == "https://example.com/a"
-    assert source["title"] == "CompA overview"
+    assert source["url"] == "https://example.com/raw"
+    assert source["title"] == "https://example.com/raw"
 
 
 # ── 3: partial competitor retrieval ───────────────────
@@ -485,9 +502,8 @@ async def test_partial_competitor_retrieval_preserves_successful_records(
         m.field == "competitors" and "1 of 2" in m.reason
         for m in result.missing_data
     )
-    # Successful lookup's sources are merged into the
-    # response (1 from the LLM response + 2 from lookup).
-    assert len(result.data.sources) == 3
+    # LLM-only citations are ignored; only provider-returned sources survive.
+    assert len(result.data.sources) == 2
     assert any(
         s.url == "https://evidence.example/compa-0"
         for s in result.data.sources
@@ -536,6 +552,180 @@ async def test_genuine_zero_metrics_stay_zero():
     assert "Growth Rate" not in derived_titles
     assert "marketShare" not in result.derived_data.charts_generated
     assert "growth" not in result.derived_data.charts_generated
+
+
+def test_structured_records_require_retrieved_evidence_and_preserve_zero():
+    orch = make_orchestrator()
+    url = "https://evidence.example/fleetfox"
+    response = {
+        "_evidence_required": True,
+        "answer": "# Unsupported narrative",
+        "business_summary": "FleetFox provides delivery routing and tracking.",
+        "summary_evidence_urls": [url],
+        "summary_evidence_quotes": [
+            "FleetFox provides delivery routing and tracking.",
+        ],
+        "executive_summary": "FleetFox provides delivery routing and tracking.",
+        "competitors": [
+            {
+                "name": "FleetFox",
+                "description": "Supported competitor",
+                "marketShare": 0,
+                "evidence_urls": [url],
+                "evidence_quotes": [
+                    "FleetFox has 0% market share.",
+                ],
+            },
+            {
+                "name": "Invented competitor",
+                "evidence_urls": ["https://not-retrieved.example/"],
+                "evidence_quotes": ["This quote is not in an accepted source."],
+            },
+        ],
+        "products": [
+            {
+                "name": "FleetFox Starter",
+                "startingPrice": 0,
+                "evidence_urls": [url],
+                "evidence_quotes": [
+                    "FleetFox Starter provides delivery routing and tracking",
+                    "the free plan costs $0 per month",
+                ],
+            },
+            {
+                "name": "Unsupported Product",
+                "evidence_urls": ["https://not-retrieved.example/"],
+                "evidence_quotes": ["This quote is not in an accepted source."],
+            },
+        ],
+        "pricing_tiers": [
+            {
+                "name": "Free",
+                "priceMonthly": 0,
+                "evidence_urls": [url],
+                "evidence_quotes": [
+                    "the free plan costs $0 per month",
+                ],
+            },
+            {
+                "name": "Unknown",
+                "evidence_urls": [url],
+                "evidence_quotes": [
+                    "FleetFox Starter provides delivery routing and tracking",
+                ],
+            },
+        ],
+        "insights": [{
+            "title": "FleetFox dominates a $5B market",
+            "summary": "An unsupported market leadership claim.",
+            "evidence_urls": [url],
+            "evidence_quotes": [
+                "FleetFox Starter provides delivery routing and tracking",
+            ],
+        }],
+        "market_gaps": [],
+        "reports": [{
+            "title": "FleetFox market leadership report",
+            "summary": "A fabricated report summary.",
+            "evidence_urls": [url],
+            "evidence_quotes": [
+                "FleetFox Starter provides delivery routing and tracking",
+            ],
+        }],
+        "charts": [{
+            "title": "Invented market share",
+            "kind": "bar",
+            "series": [{"name": "Share", "points": [{"label": "FleetFox", "value": 99}]}],
+            "evidence_urls": [url],
+            "evidence_quotes": [
+                "FleetFox Starter provides delivery routing and tracking",
+            ],
+        }],
+        "metric_cards": [{
+            "label": "Market size",
+            "value": 5_000_000_000,
+            "evidence_urls": [url],
+            "evidence_quotes": [
+                "FleetFox Starter provides delivery routing and tracking",
+            ],
+        }],
+        "swot": {"strengths": ["Dominates market"]},
+        "swot_evidence_urls": [url],
+        "swot_evidence_quotes": [
+            "FleetFox Starter provides delivery routing and tracking",
+        ],
+        "sources": [{"url": "https://not-retrieved.example/"}],
+    }
+    research = {
+        "results": {
+            "competitor_research": {
+                "sources": [{
+                    "url": url,
+                    "title": "FleetFox logistics platform",
+                    "publisher": "FleetFox",
+                    "snippet": (
+                        "FleetFox provides delivery routing and tracking. "
+                        "FleetFox Starter provides delivery routing and tracking; "
+                        "the free plan costs $0 per month and FleetFox has 0% market share."
+                    ),
+                }],
+            },
+        },
+    }
+
+    result = orch._build_analysis_result(
+        form_input=make_form(),
+        llm_response=response,
+        research=research,
+        processing_time_ms=1,
+    )
+
+    assert result.executive_summary == (
+        "FleetFox provides delivery routing and tracking."
+    )
+    assert result.report == ""
+    assert [competitor.name for competitor in result.competitors] == ["FleetFox"]
+    assert result.competitors[0].marketShare == 0
+    assert [product.name for product in result.products] == ["FleetFox Starter"]
+    assert result.products[0].startingPrice == 0
+    assert result.products[0].features == []
+    assert [tier.priceMonthly for tier in result.pricing_tiers] == [0]
+    assert result.insights == []
+    assert result.reports == []
+    assert result.charts == []
+    assert result.metric_cards == []
+    assert result.swot.strengths == []
+    assert [source.url for source in result.sources] == [url]
+
+
+def test_missing_product_and_chart_numeric_values_stay_missing():
+    orch = make_orchestrator()
+    product = orch._to_product({
+        "name": "FleetFox Starter",
+        "features": [{"name": "Live tracking"}],
+    })
+    tiers = [
+        orch._to_pricing_tier({"name": "Unknown"}),
+        orch._to_pricing_tier({"name": "Free", "priceMonthly": 0}),
+    ]
+    chart = orch._sanitize_charts([{
+        "title": "Reported values",
+        "kind": "bar",
+        "series": [{
+            "id": "metrics",
+            "name": "Metrics",
+            "points": [
+                {"label": "Known zero", "value": 0},
+                {"label": "Unavailable"},
+            ],
+        }],
+    }])
+
+    assert product.startingPrice is None
+    assert product.features[0].maturity is None
+    assert product.features[0].adoption is None
+    assert [tier.priceMonthly for tier in tiers] == [None, 0]
+    assert [point.value for point in chart[0].series[0].points] == [0]
 
 
 # ── 6: missing pricing and market data ────────────────
@@ -714,7 +904,10 @@ async def test_bootstrap_without_chat_session_or_conversational_planning():
     # Research planning is deterministic — no LLM planning step.
     assert orch.webhunter.research.await_count == 1
     research_kwargs = orch.webhunter.research.await_args.kwargs
-    assert research_kwargs["research_types"] == ["competitor_research"]
+    assert research_kwargs["research_types"] == [
+        "competitor_research",
+        "source_verification",
+    ]
 
     # No conversational endpoints of the pipeline are touched.
     orch.llmping.explain.assert_not_awaited()

@@ -16,7 +16,11 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 
-from app.services.llmping_client import LLMPingClient, LLMPingError
+from app.services.llmping_client import (
+    LLMPingClient,
+    LLMPingError,
+    _adapt_response,
+)
 from app.services.webhunter_client import (
     WebHunterClient,
     WebHunterError,
@@ -46,6 +50,7 @@ def _make_webhunter_fake(captured: dict[str, Any]) -> FastAPI:
     @app.post("/research/sync")
     async def research_sync(payload: dict):
         captured["payload"] = payload
+        captured.setdefault("payloads", []).append(payload)
         return {
             "status": "completed",
             "query": payload.get("query", ""),
@@ -54,8 +59,11 @@ def _make_webhunter_fake(captured: dict[str, Any]) -> FastAPI:
                 {
                     "sub_query": payload.get("query", ""),
                     "url": "https://example.com/a",
-                    "title": "Top competitors",
-                    "snippet": "Competitors include X, Y, Z.",
+                    "title": "Fragrance competitor product and pricing plans",
+                    "snippet": (
+                        "Scentra fragrance competitors offer perfume products, "
+                        "features, and published pricing plans."
+                    ),
                 }
             ],
             "crawled_contents": [],
@@ -78,7 +86,7 @@ def _start_fake(app: FastAPI) -> tuple[httpx.ASGITransport, str]:
 # ── LLMPing contract ────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_llmping_wire_payload_has_query_and_session_id():
-    captured: dict[str, Any] = {}
+    captured: dict[str, Any] = {"payloads": []}
     fake = _make_llmping_fake(captured)
     transport, _ = _start_fake(fake)
 
@@ -106,9 +114,8 @@ async def test_llmping_wire_payload_has_query_and_session_id():
         "session_id": "abc-123",
     }, f"unexpected wire payload: {captured['payload']!r}"
     assert reply["answer"] == "Scentra is a mid-range DTC fragrance brand."
-    # Response adapter fills in the keys the orchestrator reads.
-    assert reply["business_summary"].startswith("Scentra")
-    assert reply["executive_summary"].startswith("Scentra")
+    assert "business_summary" not in reply
+    assert "executive_summary" not in reply
 
 
 @pytest.mark.asyncio
@@ -125,7 +132,7 @@ async def test_llmping_full_analysis_builds_query_from_business():
     llmp = LLMPingClient(base_url="http://fake-upstream")
     llmp._client = client
 
-    await llmp.chat({
+    reply = await llmp.chat({
         "task": "full_analysis",
         "session_id": "s1",
         "context": {
@@ -133,6 +140,17 @@ async def test_llmping_full_analysis_builds_query_from_business():
                 "business_name": "Scentra",
                 "industry": "Fragrance",
                 "competitors": ["Forest Essentials", "Kama Ayurveda"],
+            },
+            "research": {
+                "results": {
+                    "competitor_research": {
+                        "sources": [{
+                            "url": "https://evidence.example/fragrance",
+                            "title": "Indian fragrance competitors",
+                            "snippet": "Published evidence on fragrance brands.",
+                        }],
+                    },
+                },
             },
         },
     })
@@ -145,6 +163,44 @@ async def test_llmping_full_analysis_builds_query_from_business():
     # Query mentions Scentra and at least one competitor.
     assert "Scentra" in payload["query"]
     assert "Forest Essentials" in payload["query"] or "competitor" in payload["query"].lower()
+    assert "https://evidence.example/fragrance" in payload["query"]
+    assert "Published evidence" in payload["query"]
+    assert "JSON object only" in payload["query"]
+    assert "Do not invent" in payload["query"]
+    assert reply["_structured_output_error"] is True
+    assert "report" not in reply
+    assert "executive_summary" not in reply
+
+
+def test_full_analysis_adapter_accepts_structured_json_and_rejects_markdown():
+    prose = _adapt_response(
+        {
+            "answer": "# Executive Summary\nA long narrative report.",
+            "provider": "test",
+            "model": "test-model",
+        },
+        task="full_analysis",
+    )
+    assert prose["_structured_output_error"] is True
+    assert "answer" not in prose
+    assert "executive_summary" not in prose
+    assert "report" not in prose
+
+    structured = _adapt_response(
+        {
+            "answer": (
+                '```json\n{"executive_summary":"Evidence-backed summary",'
+                '"competitors":[]}\n```'
+            ),
+            "provider": "test",
+            "model": "test-model",
+        },
+        task="full_analysis",
+    )
+    assert structured["executive_summary"] == "Evidence-backed summary"
+    assert structured["competitors"] == []
+    assert structured["_evidence_required"] is True
+    assert "answer" not in structured
 
 
 @pytest.mark.asyncio
@@ -187,10 +243,14 @@ async def test_webhunter_wire_payload_has_query_and_max_results():
     results = await wh.research(
         business={
             "business_name": "Scentra",
+            "idea": "A curated premium perfume line with a scent quiz.",
             "industry": "Fragrance",
+            "products_services": ["EDP", "Discovery sets"],
+            "target_customers": "Urban fragrance buyers",
             "geography": "India",
             "pricing": "₹3500",
             "competitors": ["Zoho Creator", "ClickUp", "Fieldproxy"],
+            "research_goals": ["Compare independently discovered options."],
         },
         research_types=["competitor_research", "pricing_research"],
     )
@@ -207,6 +267,11 @@ async def test_webhunter_wire_payload_has_query_and_max_results():
     assert all(name in payload["query"] for name in [
         "Zoho Creator", "ClickUp", "Fieldproxy",
     ])
+    assert "Compare independently discovered options" in payload["query"]
+    assert "A curated premium perfume line" in payload["query"]
+    assert "products/services: EDP, Discovery sets" in payload["query"]
+    assert "target customers: Urban fragrance buyers" in payload["query"]
+    assert "geography: India" in payload["query"]
     q_lower = payload["query"].lower()
     assert "competitor" in q_lower or "pricing" in q_lower
 
@@ -214,22 +279,287 @@ async def test_webhunter_wire_payload_has_query_and_max_results():
     assert "results" in results
     assert "competitor_research" in results["results"]
     assert "pricing_research" in results["results"]
-    assert results["results"]["competitor_research"]["sources"][0]["url"] == (
-        "https://example.com/a"
+    for topic in ("competitor_research", "pricing_research"):
+        assert results["batch_statuses"][topic]["status"] == "completed"
+        assert results["results"][topic]["sources"][0]["url"] == (
+            "https://example.com/a"
+        )
+    assert len(captured["payloads"]) == 2
+    assert {payload["max_pages"] for payload in captured["payloads"]} == {2}
+
+
+@pytest.mark.asyncio
+async def test_webhunter_filters_unrelated_and_explicit_results_and_retries_variant():
+    queries: list[str] = []
+    app = FastAPI()
+
+    @app.post("/research/sync")
+    async def research_sync(payload: dict):
+        queries.append(payload["query"])
+        if len(queries) == 1:
+            return {
+                "status": "completed",
+                "search_results": [
+                    {
+                        "url": "https://adult.example/xxx-fleet",
+                        "title": "Fleet management xxx video",
+                        "snippet": "Adult video results.",
+                    },
+                    {
+                        "url": "https://en.wikipedia.org/wiki/India",
+                        "title": "India - Wikipedia",
+                        "snippet": "Geography and history of India.",
+                    },
+                ],
+                "crawled_contents": [],
+            }
+        url = "https://www.fleetfox.example/product?utm_source=search"
+        return {
+            "status": "completed",
+            "search_results": [{
+                "url": url,
+                "title": "FleetFox competitor fleet management software",
+                "snippet": (
+                    "FleetFox coordinates logistics deliveries and routes; "
+                    "compare competitors and alternatives."
+                ),
+            }],
+            "crawled_contents": [{
+                "url": "https://fleetfox.example/product",
+                "title": "FleetFox fleet management software",
+                "content": (
+                    "FleetFox software supports fleet routing, logistics "
+                    "deliveries, shipment tracking, and driver management."
+                ),
+            }],
+        }
+
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://fake",
+    )
+    wh = WebHunterClient(base_url="http://fake")
+    wh._client = client
+    result = await wh.research(
+        business={
+            "business_name": "FleetFox",
+            "idea": "Fleet management software for small logistics operators.",
+            "industry": "Logistics technology",
+            "products_services": ["fleet routing", "shipment tracking"],
+            "target_customers": "Small logistics companies in India",
+            "geography": "India",
+            "research_goals": ["Discover fleet management competitors."],
+        },
+        research_types=["competitor_research"],
+    )
+    await client.aclose()
+
+    batch = result["batch_statuses"]["competitor_research"]
+    assert len(queries) == 2
+    assert queries[0] != queries[1]
+    assert "FleetFox" in queries[0]
+    assert "Logistics technology" in queries[0]
+    assert "shipment tracking" in queries[0]
+    assert "Small logistics companies in India" in queries[0]
+    assert batch["status"] == "completed"
+    assert batch["attempts"][0]["rejected"] == 2
+    assert batch["attempts"][0]["http_status"] == 200
+    assert batch["attempts"][0]["duration_ms"] >= 0
+    assert batch["rejected_reasons"] == {
+        "adult_or_explicit_content": 1,
+        "no_business_context_match": 1,
+    }
+    assert batch["accepted"] == 1
+    accepted = result["results"]["competitor_research"]
+    assert [source["url"] for source in accepted["sources"]] == [
+        "https://www.fleetfox.example/product?utm_source=search",
+    ]
+    assert len(accepted["crawled"]) == 1
+    assert result["raw"]["search_results"][0]["url"].startswith(
+        "https://www.fleetfox.example/"
     )
 
 
 @pytest.mark.asyncio
-async def test_webhunter_async_failure_does_not_raise():
-    """When WebHunter returns status=failed, the client returns an
-    empty result and does NOT raise — the orchestrator treats that
-    as missing research and continues."""
-    captured: dict[str, Any] = {}
+async def test_webhunter_preserves_successful_batch_and_deduplicates_urls():
+    active = 0
+    peak_active = 0
+    app = FastAPI()
+
+    @app.post("/research/sync")
+    async def research_sync(payload: dict):
+        nonlocal active, peak_active
+        active += 1
+        peak_active = max(peak_active, active)
+        try:
+            await asyncio.sleep(0.03)
+            if "published plans" in payload["query"].lower():
+                return {
+                    "status": "failed",
+                    "error": "search provider unavailable",
+                    "errors": [],
+                }
+            return {
+                "status": "completed",
+                "search_results": [{
+                    "url": "https://fleetfox.example/company",
+                    "title": "FleetFox logistics fleet competitor platform",
+                    "snippet": (
+                        "FleetFox supports logistics fleet routing and is a "
+                        "competitor alternative."
+                    ),
+                }],
+                "crawled_contents": [],
+            }
+        finally:
+            active -= 1
+
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://fake",
+    )
+    wh = WebHunterClient(base_url="http://fake")
+    wh._client = client
+    result = await wh.research(
+        business={
+            "business_name": "FleetFox",
+            "industry": "Fleet logistics",
+            "idea": "Fleet management software",
+            "products_services": ["shipment tracking"],
+        },
+        research_types=["competitor_research", "pricing_research"],
+    )
+    await client.aclose()
+
+    assert peak_active == 2
+    assert result["batch_statuses"]["competitor_research"]["status"] == "completed"
+    assert result["batch_statuses"]["pricing_research"]["status"] == "failed"
+    assert len(result["results"]["competitor_research"]["sources"]) == 1
+    assert result["results"]["pricing_research"]["sources"] == []
+    assert len(result["raw"]["search_results"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhunter_bounds_concurrency_and_batch_duration(monkeypatch):
+    import app.services.webhunter_client as webhunter_module
+
+    active = 0
+    peak_active = 0
+    app = FastAPI()
+
+    @app.post("/research/sync")
+    async def research_sync(payload: dict):
+        nonlocal active, peak_active
+        active += 1
+        peak_active = max(peak_active, active)
+        try:
+            await asyncio.sleep(0.03)
+            return {
+                "status": "completed",
+                "search_results": [{
+                    "url": f"https://fleetfox.example/{active}",
+                    "title": "FleetFox logistics fleet software official product page",
+                    "snippet": (
+                        "FleetFox is a competitor with product features and "
+                        "published pricing plans. Customers review workflow needs; "
+                        "market trends, gaps, threats, opportunities, strengths, "
+                        "weaknesses, and vendor information."
+                    ),
+                }],
+                "crawled_contents": [],
+            }
+        finally:
+            active -= 1
+
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://fake",
+    )
+    wh = WebHunterClient(base_url="http://fake")
+    wh._client = client
+    result = await wh.research(
+        business={
+            "business_name": "FleetFox",
+            "industry": "Fleet logistics",
+            "idea": "Fleet management software",
+        },
+        research_types=[
+            "competitor_research",
+            "product_research",
+            "pricing_research",
+            "customer_needs",
+            "market_research",
+        ],
+    )
+    await client.aclose()
+    assert peak_active <= 4
+    assert peak_active == 4
+    assert all(
+        batch["status"] == "completed"
+        for batch in result["batch_statuses"].values()
+    )
+
+    monkeypatch.setattr(webhunter_module, "_RESEARCH_BATCH_TIMEOUT_S", 0.01)
+    slow_app = FastAPI()
+
+    @slow_app.post("/research/sync")
+    async def slow_research(payload: dict):
+        await asyncio.sleep(0.1)
+        return {"status": "completed", "search_results": [], "crawled_contents": []}
+
+    slow_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=slow_app),
+        base_url="http://fake",
+    )
+    slow_wh = WebHunterClient(base_url="http://fake")
+    slow_wh._client = slow_client
+    timed = await slow_wh.research(
+        business={"business_name": "FleetFox", "industry": "Logistics"},
+        research_types=["competitor_research"],
+    )
+    await slow_client.aclose()
+    assert timed["batch_statuses"]["competitor_research"]["status"] == "timed_out"
+
+
+@pytest.mark.asyncio
+async def test_webhunter_rejects_malformed_completed_payload():
+    app = FastAPI()
+
+    @app.post("/research/sync")
+    async def research_sync(payload: dict):
+        return {"status": "completed", "search_results": {}, "crawled_contents": []}
+
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://fake",
+    )
+    wh = WebHunterClient(base_url="http://fake")
+    wh._client = client
+    result = await wh.research(
+        business={"business_name": "FleetFox", "industry": "Logistics"},
+        research_types=["competitor_research"],
+    )
+    await client.aclose()
+
+    batch = result["batch_statuses"]["competitor_research"]
+    assert batch["status"] == "failed"
+    assert batch["accepted"] == 0
+    assert "malformed result lists" in batch["error"]
+
+
+@pytest.mark.asyncio
+async def test_webhunter_bootstrap_retries_reported_failure_and_keeps_batch_status():
+    """Transient failures are retried with a changed query and exposed by batch."""
+    attempts = 0
+    queries = []
 
     app = FastAPI()
 
     @app.post("/research/sync")
     async def sync(payload: dict):
+        nonlocal attempts
+        attempts += 1
+        queries.append(payload["query"])
         return {"status": "failed", "error": "upstream timeout", "errors": []}
 
     transport = httpx.ASGITransport(app=app)
@@ -237,12 +567,20 @@ async def test_webhunter_async_failure_does_not_raise():
     wh = WebHunterClient(base_url="http://fake")
     wh._client = client
 
-    results = await wh.research(
+    result = await wh.research(
         business={"business_name": "x", "industry": "y"},
         research_types=["competitor_research"],
     )
     await client.aclose()
-    assert results["results"] == {}
+    assert attempts == 2
+    assert queries[0] != queries[1]
+    assert result["batch_statuses"]["competitor_research"]["status"] == "failed"
+    assert result["batch_statuses"]["competitor_research"]["error"] == (
+        "provider reported research failure"
+    )
+    assert all(attempt["http_status"] == 200 for attempt in result[
+        "batch_statuses"
+    ]["competitor_research"]["attempts"])
 
 
 # ── §5.1 LLMPing extraction & explain adapters ──

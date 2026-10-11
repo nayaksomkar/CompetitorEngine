@@ -153,12 +153,13 @@ async def test_webhunter_client_connection_error_clears_cache():
     mock_client = MagicMock()
     mock_client.post = AsyncMock(side_effect=httpx.ConnectError("nope"))
     with patch.object(c, "_get_client", return_value=mock_client):
-        with pytest.raises(WebHunterError):
-            await c.research(
-                business={"business_name": "x"},
-                research_types=["competitor_research"],
-            )
+        result = await c.research(
+            business={"business_name": "x"},
+            research_types=["competitor_research"],
+        )
 
+    assert result["batch_statuses"]["competitor_research"]["status"] == "failed"
+    assert result["results"]["competitor_research"]["sources"] == []
     assert c.base_url == ""
 
 

@@ -94,8 +94,8 @@ class ProductFeature(BaseModel):
     id: str = ""
     name: str = ""
     description: str = ""
-    maturity: str = "GA"
-    adoption: float = 0.0
+    maturity: str | None = None
+    adoption: float | None = None
 
 
 class Product(BaseModel):
@@ -115,7 +115,7 @@ class PricingTier(BaseModel):
     id: str = ""
     competitorId: str = ""
     name: str = ""
-    priceMonthly: float | str = "Custom"  # number or "Custom"
+    priceMonthly: float | str | None = None  # number, "Custom", or unavailable
     billing: str = "monthly"
     features: list[str] = Field(default_factory=list)
     bestFor: str = ""
@@ -128,8 +128,8 @@ class MarketGap(BaseModel):
     id: str = ""
     title: str = ""
     description: str = ""
-    opportunityScore: float = 0.0
-    difficultyScore: float = 0.0
+    opportunityScore: float | None = None
+    difficultyScore: float | None = None
     estimatedRevenue: str = ""
     affectedSegments: list[str] = Field(default_factory=list)
 
@@ -142,7 +142,7 @@ class InsightItem(BaseModel):
     detail: str = ""
     category: str = "Insight"
     impact: str = "Medium"
-    confidence: float = 0.0
+    confidence: float | None = None
     relatedCompetitors: list[str] = Field(default_factory=list)
     explanation: str = ""
 
@@ -172,7 +172,7 @@ class Report(BaseModel):
     summary: str = ""
     type: str = "Executive Summary"
     date: str = ""
-    pages: int = 0
+    pages: int | None = None
     sections: list[ReportSection] = Field(default_factory=list)
 
 

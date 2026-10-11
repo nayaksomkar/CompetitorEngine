@@ -56,17 +56,64 @@ def _build_query(payload: dict[str, Any]) -> str:
         name = business.get("business_name") or "the company"
         industry = business.get("industry") or business.get("idea") or "the industry"
         comps = business.get("competitors") or []
+        evidence = _research_evidence(
+            (payload.get("context") or {}).get("research") or {}
+        )
+        requested_count = payload.get("requested_count") or 3
         comp_line = (
             f" Include competitor profiling for: {', '.join(comps)}."
             if comps else ""
         )
         return (
-            f"Perform a full competitive analysis of {name} "
-            f"({industry}). Cover executive summary, market size and "
-            f"growth, positioning, a SWOT, key competitors with "
-            f"pricing and market position, market gaps, opportunities, "
-            f"risks, recommendations and an action plan."
-            f"{comp_line}"
+            f"Analyze {name} ({industry}) using only the provider evidence "
+            f"below and the submitted business profile. Find up to "
+            f"{requested_count} relevant competitors independently when none "
+            f"were provided.{comp_line}\n\n"
+            "Return one JSON object only (a Markdown JSON fence is acceptable). "
+            "Do not write a prose or Markdown report. Do not invent facts, "
+            "sources, prices, market statistics, shares, growth rates, SWOT "
+            "claims, or competitors. Use null for unknown numeric or scalar "
+            "values and [] for unavailable arrays. Each research-derived object "
+            "must include evidence_urls containing only URLs from the evidence "
+            "below and evidence_quotes containing one exact 25-200 character "
+            "excerpt copied from those cited sources. Every quote must appear "
+            "verbatim in its cited source snippet/content; omit any claim that "
+            "cannot be quoted. Keep titles, names, descriptions, and every "
+            "individual claim closely supported by the quoted words; do not "
+            "attach a source that only mentions the entity name. Include "
+            "summary_evidence_quotes, "
+            "positioning_evidence_quotes, and swot_evidence_quotes for those "
+            "top-level claims. "
+            "Use these top-level keys: business_summary, executive_summary, "
+            "summary_evidence_urls, positioning, positioning_evidence_urls, "
+            "competitors, products, pricing_tiers, swot, swot_evidence_urls, "
+            "market_gaps, insights, recommendations, action_plan, reports, "
+            "metric_cards. Do not include a top-level report string; the "
+            "orchestrator derives charts from validated numeric records. "
+            "Competitor fields: name, description, funding, founded, hq, "
+            "marketShare, growthRate, pricingTier, marketPosition, strengths, "
+            "weaknesses, swot, evidence_urls, evidence_quotes. Product fields: name, "
+            "competitorId, tagline, category, pricingModel, startingPrice, "
+            "features (id, name, description, maturity, adoption, evidence_urls, "
+            "evidence_quotes); each feature needs its own evidence. "
+            "Pricing tier fields: name, competitorId, priceMonthly, billing, "
+            "features, bestFor, pricingModel, highlighted, evidence_urls, "
+            "evidence_quotes. "
+            "Market gap fields: title, description, opportunityScore, "
+            "difficultyScore, estimatedRevenue, affectedSegments, evidence_urls, "
+            "evidence_quotes. "
+            "Insight and recommendation fields: title, category, impact, "
+            "confidence, summary, detail, relatedCompetitors, evidence_urls, "
+            "evidence_quotes. "
+            "Action plan fields: title, owner, priority, horizon, effort, impact, "
+            "description, rationale, evidence_urls, evidence_quotes. Report objects: title, type, "
+            "date, pages, summary, sections [{heading, body}], evidence_urls, "
+            "evidence_quotes. "
+            "Metric cards "
+            "must use label, value, change, evidence_urls, evidence_quotes. SWOT uses strengths, weaknesses, "
+            "opportunities, threats arrays of strings.\n\n"
+            f"Submitted profile:\n{json.dumps(business, ensure_ascii=False, default=str)}"
+            f"\n\nProvider evidence:\n{json.dumps(evidence, ensure_ascii=False, default=str)}"
         )
 
     if task == "decide_research_need":
@@ -162,23 +209,92 @@ def _build_query(payload: dict[str, Any]) -> str:
     return message or "Please respond."
 
 
-def _adapt_response(data: dict[str, Any]) -> dict[str, Any]:
-    """Map LLMPing's reply shape into the keys the orchestrator reads.
+def _research_evidence(research: Any) -> list[dict[str, str]]:
+    """Keep provider-returned evidence compact and deduplicated for synthesis."""
+    if not isinstance(research, dict):
+        return []
 
-    LLMPing returns `{answer, provider, model}`. The orchestrator
-    `_build_analysis_result` looks for `executive_summary`,
-    `business_summary`, `competitors`, `swot`, etc. We expose the
-    raw answer under multiple keys so the existing orchestrator
-    code keeps working regardless of which task fired.
-    """
-    answer = str(data.get("answer") or "")
-    adapted: dict[str, Any] = {**data}
-    if answer:
-        adapted.setdefault("answer", answer)
-        adapted.setdefault("business_summary", answer)
-        adapted.setdefault("executive_summary", answer)
-        adapted.setdefault("report", answer)
-    return adapted
+    by_url: dict[str, dict[str, str]] = {}
+    results = research.get("results")
+    if isinstance(results, dict):
+        for topic in results.values():
+            if not isinstance(topic, dict):
+                continue
+            for source in topic.get("sources") or []:
+                if not isinstance(source, dict):
+                    continue
+                url = source.get("url")
+                if isinstance(url, str) and url:
+                    by_url[url] = {
+                        "url": url,
+                        "title": str(source.get("title") or ""),
+                        "publisher": str(source.get("publisher") or ""),
+                        "date": str(source.get("date") or ""),
+                        "snippet": str(source.get("snippet") or "")[:1200],
+                    }
+            for page in topic.get("crawled") or []:
+                if not isinstance(page, dict):
+                    continue
+                url = page.get("url")
+                if isinstance(url, str) and url:
+                    entry = by_url.setdefault(url, {
+                        "url": url,
+                        "title": str(page.get("title") or ""),
+                        "publisher": str(page.get("publisher") or ""),
+                        "date": str(page.get("date") or ""),
+                        "snippet": "",
+                    })
+                    content = page.get("content")
+                    if isinstance(content, str) and content:
+                        entry["snippet"] = content[:1200]
+    return list(by_url.values())[:12]
+
+
+def _adapt_response(
+    data: dict[str, Any], *, task: str = ""
+) -> dict[str, Any]:
+    """Parse structured full-analysis JSON without promoting prose to data."""
+    adapted: dict[str, Any] = dict(data)
+    if task != "full_analysis":
+        return adapted
+
+    adapted["_evidence_required"] = True
+    answer = data.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        return adapted
+
+    structured_keys = {
+        "business_summary", "executive_summary", "positioning",
+        "competitors", "products", "pricing_tiers", "market_gaps",
+        "insights", "recommendations", "action_plan", "reports",
+        "charts", "metric_cards", "swot",
+    }
+    if structured_keys.intersection(data):
+        adapted.pop("answer", None)
+        return adapted
+
+    try:
+        parsed = _parse_json_reply(answer, what="structured analysis")
+    except LLMPingError:
+        logger.warning(
+            "llmping_unstructured_analysis",
+            answer_chars=len(answer),
+            provider=data.get("provider"),
+            model=data.get("model"),
+        )
+        return {
+            "_evidence_required": True,
+            "_structured_output_error": True,
+            "provider": data.get("provider"),
+            "model": data.get("model"),
+        }
+
+    return {
+        **parsed,
+        "_evidence_required": True,
+        "provider": data.get("provider"),
+        "model": data.get("model"),
+    }
 
 
 class LLMPingClient:
@@ -287,7 +403,10 @@ class LLMPingClient:
             response.raise_for_status()
             data = response.json() if response.content else {}
             log.info("llmping_response", status=response.status_code)
-            return _adapt_response(data)
+            return _adapt_response(
+                data,
+                task=str(payload.get("task") or ""),
+            )
         except httpx.TimeoutException as e:
             log.error("llmping_timeout", error=str(e))
             raise LLMPingError(f"LLMPing timeout: {e}") from e

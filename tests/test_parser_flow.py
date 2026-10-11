@@ -340,7 +340,7 @@ async def test_bootstrap_preserves_each_successful_requested_lookup(
 
     assert len(result.data.competitors) == successful_lookups
     assert result.result_counts.retrieved == successful_lookups
-    assert len(result.data.sources) == 1 + successful_lookups * 2
+    assert len(result.data.sources) == successful_lookups * 2
     assert all(c.explanation and c.explanation.sources for c in result.data.competitors)
     assert all(c.marketShare is None and c.pricingTier == "" for c in result.data.competitors)
     assert len(result.entity_statuses["competitors"]) == 3

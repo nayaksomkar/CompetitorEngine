@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     llmping_api_key: str | None = None
 
     webhunter_url: str = ""
-    webhunter_timeout: int = 30
+    webhunter_timeout: int = 75
 
     # Discovery controls
     require_service_urls: bool = False

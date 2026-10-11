@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import re
 import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import structlog
 
@@ -312,7 +314,12 @@ class Orchestrator:
             logger.warning("upstream_resolution_error", error=str(e))
 
     # ── Overview ───────────────────────────────────────────────
-    async def run_overview(self, form_input: FormInput) -> AnalysisResult:
+    async def run_overview(
+        self,
+        form_input: FormInput,
+        requested_count: int = _MAX_DYNAMIC_COMPANIES,
+        provider_failures: list[str] | None = None,
+    ) -> AnalysisResult:
         """
         Full competitive analysis pipeline:
           WebHunter (fresh research) → LLMPing (synthesis) →
@@ -321,6 +328,8 @@ class Orchestrator:
         start = time.time()
         log = logger.bind(business=form_input.business_name)
         log.info("overview_started")
+        if provider_failures is None:
+            provider_failures = []
 
         business = form_input.model_dump()
 
@@ -336,10 +345,65 @@ class Orchestrator:
                     business=business,
                     research_types=research_types,
                 )
+                batch_statuses = research.get("batch_statuses")
+                if isinstance(batch_statuses, dict):
+                    for topic, status in batch_statuses.items():
+                        if not isinstance(status, dict):
+                            continue
+                        log.info(
+                            "research_batch_result",
+                            topic=topic,
+                            status=status.get("status"),
+                            duration_ms=status.get("duration_ms"),
+                            accepted=status.get("accepted"),
+                            rejected=status.get("rejected"),
+                            rejected_reasons=status.get("rejected_reasons") or {},
+                            attempts=[
+                                {
+                                    key: attempt.get(key)
+                                    for key in (
+                                        "attempt", "provider_status",
+                                        "http_status", "duration_ms",
+                                        "accepted", "rejected",
+                                        "rejected_reasons", "error",
+                                    )
+                                }
+                                for attempt in status.get("attempts") or []
+                                if isinstance(attempt, dict)
+                            ],
+                        )
+                        if status.get("status") != "completed":
+                            attempt_details = ", ".join(
+                                (
+                                    f"try {attempt.get('attempt')}: "
+                                    f"{attempt.get('provider_status')}"
+                                    + (
+                                        f"/HTTP {attempt['http_status']}"
+                                        if attempt.get("http_status") is not None
+                                        else ""
+                                    )
+                                    + f"/{attempt.get('duration_ms', 0)}ms"
+                                )
+                                for attempt in status.get("attempts") or []
+                                if isinstance(attempt, dict)
+                            )
+                            provider_failures.append(
+                                f"{topic}: {status.get('error') or 'no relevant results'} "
+                                f"(accepted={status.get('accepted', 0)}, "
+                                f"rejected={status.get('rejected', 0)}"
+                                + (
+                                    f"; rejected_by={status['rejected_reasons']}"
+                                    if status.get("rejected_reasons") else ""
+                                )
+                                + (f"; {attempt_details}" if attempt_details else "")
+                                + ")"
+                            )
             except WebHunterError as e:
                 # Never let a research failure kill the analysis —
                 # LLMPing can still synthesize from context alone.
-                log.warning("webhunter_failed_continuing", error=str(e))
+                reason = str(e)[:240]
+                log.warning("webhunter_failed_continuing", error=reason)
+                provider_failures.append(reason)
                 research = {}
 
         # 2. Reasoning over the gathered context.
@@ -350,6 +414,7 @@ class Orchestrator:
                 "business": business,
                 "research": research,
             },
+            "requested_count": requested_count,
             "required_outputs": OVERVIEW_REQUIRED_OUTPUTS,
         }
 
@@ -535,7 +600,12 @@ class Orchestrator:
         last_error: Exception | None = None
         for attempt in range(_BOOTSTRAP_MAX_RETRIES + 1):
             try:
-                result = await self.run_overview(form_input)
+                provider_failures: list[str] = []
+                result = await self.run_overview(
+                    form_input,
+                    requested_count=requested_count,
+                    provider_failures=provider_failures,
+                )
                 break
             except LLMPingError as e:
                 last_error = e
@@ -566,6 +636,14 @@ class Orchestrator:
             )
 
         missing_data = self._build_missing_data(parser_input, result)
+        missing_data.extend(
+            MissingData(
+                field="research",
+                reason=f"WebHunter research failed: {failure}",
+                severity="warning",
+            )
+            for failure in provider_failures
+        )
         lookup_statuses: list[EntityStatus] = []
         if form_input.competitors:
             requested_names = list(dict.fromkeys(
@@ -2134,19 +2212,24 @@ class Orchestrator:
                 c.status = "complete"
         for p in result.products:
             for f in p.features:
-                f.maturity = self._canon(
-                    f.maturity, MATURITY_LEVELS, "GA"
-                )
-                f.adoption = max(0.0, min(100.0, f.adoption))
+                if f.maturity:
+                    f.maturity = self._canon(
+                        f.maturity, MATURITY_LEVELS, "GA"
+                    )
+                if f.adoption is not None:
+                    f.adoption = max(0.0, min(100.0, f.adoption))
         for mg in result.market_gaps:
-            mg.opportunityScore = max(0.0, min(100.0, mg.opportunityScore))
-            mg.difficultyScore = max(0.0, min(100.0, mg.difficultyScore))
+            if mg.opportunityScore is not None:
+                mg.opportunityScore = max(0.0, min(100.0, mg.opportunityScore))
+            if mg.difficultyScore is not None:
+                mg.difficultyScore = max(0.0, min(100.0, mg.difficultyScore))
         for ins in result.insights + result.recommendations:
             ins.category = self._canon(
                 ins.category, INSIGHT_CATEGORIES, "Insight"
             )
             ins.impact = self._canon(ins.impact, IMPACT_LEVELS, "Medium")
-            ins.confidence = max(0.0, min(100.0, ins.confidence))
+            if ins.confidence is not None:
+                ins.confidence = max(0.0, min(100.0, ins.confidence))
         for ap in result.action_plan:
             ap.priority = self._canon(ap.priority, PRIORITIES, "P1")
             ap.horizon = self._canon(ap.horizon, HORIZONS, "Next")
@@ -2367,7 +2450,7 @@ class Orchestrator:
         feature_points: list[ChartPoint] = []
         for p in result.products:
             for f in p.features:
-                if f.adoption > 0:
+                if f.adoption is not None and f.adoption > 0:
                     feature_points.append(
                         ChartPoint(
                             label=f.name,
@@ -2545,6 +2628,42 @@ class Orchestrator:
                 MissingData(
                     field="sources",
                     reason="No supporting sources were returned for this analysis.",
+                    severity="warning",
+                )
+            )
+
+        for field_name, has_results in (
+            ("products", bool(result.products)),
+            ("pricing_tiers", bool(result.pricing_tiers)),
+            ("market_gaps", bool(result.market_gaps)),
+            ("insights", bool(result.insights or result.recommendations)),
+            ("reports", bool(result.reports)),
+        ):
+            if not has_results:
+                missing.append(
+                    MissingData(
+                        field=field_name,
+                        reason=f"No structured {field_name.replace('_', ' ')} were returned.",
+                        severity="info",
+                    )
+                )
+
+        has_analysis = any((
+            result.business_summary,
+            result.executive_summary,
+            result.positioning,
+            result.competitors,
+            result.products,
+            result.pricing_tiers,
+            result.market_gaps,
+            result.insights,
+            result.recommendations,
+        ))
+        if not has_analysis:
+            missing.append(
+                MissingData(
+                    field="analysis",
+                    reason="LLMPing returned no usable structured analysis.",
                     severity="warning",
                 )
             )
@@ -2770,9 +2889,10 @@ class Orchestrator:
         if value is None or isinstance(value, bool):
             return None
         try:
-            return float(value)
+            converted = float(value)
         except (TypeError, ValueError):
             return None
+        return converted if math.isfinite(converted) else None
 
     @staticmethod
     def _canon(value: Any, valid: set[str], default: str) -> str:
@@ -2790,27 +2910,68 @@ class Orchestrator:
     # ── Internals ──────────────────────────────────────────────
     def _plan_research(self, form_input: FormInput) -> list[str]:
         """Decide which research areas to request from WebHunter."""
-        # Honor explicit user goals if present, otherwise fall back
-        # to a sensible default set.
         explicit = [
-            g.strip()
+            g.strip().casefold()
             for g in (form_input.research_goals or [])
-            if g.strip()
+            if isinstance(g, str) and g.strip()
         ]
-        if explicit:
-            return explicit
 
         default = [
             "competitor_research",
+            "product_research",
             "pricing_research",
-            "customer_reviews",
-            "market_gap",
+            "customer_needs",
+            "market_research",
+            "source_verification",
         ]
-        # If the user mentioned competitors, narrow to competitor +
-        # pricing to save WebHunter calls.
-        if form_input.competitors:
-            return ["competitor_research", "pricing_research"]
-        return default
+        if not explicit:
+            return default
+
+        topic_keywords = {
+            "competitor_research": (
+                "competitor", "competitive landscape", "positioning",
+            ),
+            "product_research": ("product", "feature", "capability"),
+            "pricing_research": ("pricing", "price", "cost", "subscription"),
+            "customer_needs": (
+                "customer", "need", "workflow", "market gap", "opportunit",
+                "unmet",
+            ),
+            "market_research": (
+                "market size", "market growth", "market trend", "landscape",
+            ),
+            "customer_reviews": ("review", "sentiment", "complaint"),
+            "source_verification": ("source", "verify", "evidence"),
+            "swot_research": ("swot", "strengths", "weaknesses"),
+        }
+        selected = {
+            topic
+            for topic, keywords in topic_keywords.items()
+            if any(
+                goal == topic or any(keyword in goal for keyword in keywords)
+                for goal in explicit
+            )
+        }
+        if not selected:
+            return default
+        if len(selected) > 1:
+            selected.add("source_verification")
+        elif "competitor_research" in selected:
+            selected.add("source_verification")
+        return [
+            topic
+            for topic in (
+                "competitor_research",
+                "product_research",
+                "pricing_research",
+                "customer_needs",
+                "market_research",
+                "source_verification",
+                "customer_reviews",
+                "swot_research",
+            )
+            if topic in selected
+        ]
 
     def _build_analysis_result(
         self,
@@ -2821,11 +2982,10 @@ class Orchestrator:
     ) -> AnalysisResult:
         """Validate LLMPing's response and assemble AnalysisResult.
 
-        Tolerates partial responses: if structured keys (`competitors`,
-        `swot`, etc.) are absent, the orchestrator falls back to using
-        the `business_summary` / `answer` text and returns a result
-        the UI can still render. Transport-level failures (timeouts,
-        connection errors) still raise `LLMPingError` upstream.
+        Tolerates partial structured responses and only preserves
+        narrative summaries when returned in their dedicated fields.
+        Transport-level failures (timeouts, connection errors) still
+        raise `LLMPingError` upstream.
 
         Accepts both the legacy LLMPing key style (`market_position`,
         `pricing`, `visualizations`) and the current domain style
@@ -2839,6 +2999,325 @@ class Orchestrator:
             # `partial` when key sections are empty.
             log = logger.bind(missing=missing)
             log.warning("llmping_response_partial")
+
+        evidence_required = bool(llm_response.get("_evidence_required"))
+        source_context = self._provider_source_data(research)
+        source_urls = set(source_context)
+
+        def records(
+            key: str,
+            *,
+            require_name_evidence: bool = False,
+        ) -> list[dict[str, Any]]:
+            raw = llm_response.get(key)
+            if not isinstance(raw, list):
+                return []
+            accepted: list[dict[str, Any]] = []
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                if evidence_required and not self._has_valid_evidence_urls(
+                    item.get("evidence_urls"), source_urls
+                ):
+                    continue
+                if evidence_required and not self._has_valid_evidence_quotes(
+                    item.get("evidence_quotes"),
+                    item.get("evidence_urls"),
+                    source_context,
+                ):
+                    continue
+                if evidence_required and key in {
+                    "marketGaps", "market_gaps", "insights",
+                    "recommendations", "action_plan", "reports",
+                }:
+                    title = item.get("title") or item.get("name")
+                    if not self._evidence_supports_text(
+                        title, item.get("evidence_quotes")
+                    ):
+                        continue
+                if evidence_required and (
+                    require_name_evidence
+                    or key in {
+                        "products",
+                        "pricingTiers",
+                        "pricing_tiers",
+                    }
+                ):
+                    name = item.get("name")
+                    if not isinstance(name, str) or not self._evidence_mentions(
+                        name, item.get("evidence_urls"), source_context
+                    ):
+                        continue
+                accepted_item = dict(item)
+                if evidence_required:
+                    claim_fields = {
+                        "competitors": (
+                            "description", "funding", "founded", "hq",
+                            "pricingTier", "pricing_tier", "marketPosition",
+                            "market_position",
+                        ),
+                        "products": (
+                            "tagline", "category", "pricingModel", "pricing_model",
+                        ),
+                        "pricingTiers": (
+                            "billing", "pricingModel", "pricing_model", "bestFor",
+                        ),
+                        "pricing_tiers": (
+                            "billing", "pricingModel", "pricing_model", "bestFor",
+                        ),
+                        "marketGaps": (
+                            "description", "estimatedRevenue",
+                            "estimated_revenue",
+                        ),
+                        "market_gaps": (
+                            "description", "estimatedRevenue",
+                            "estimated_revenue",
+                        ),
+                        "insights": (
+                            "summary", "detail", "explanation", "category", "impact",
+                        ),
+                        "recommendations": (
+                            "summary", "detail", "explanation", "category", "impact",
+                        ),
+                        "action_plan": (
+                            "description", "rationale", "owner", "priority",
+                            "horizon", "effort", "impact",
+                        ),
+                        "reports": ("summary", "date"),
+                        "metric_cards": ("label",),
+                    }.get(key, ())
+                    for field_name in claim_fields:
+                        value = accepted_item.get(field_name)
+                        if (
+                            isinstance(value, str)
+                            and value.strip()
+                            and not self._evidence_supports_text(
+                                value, item.get("evidence_quotes")
+                            )
+                        ):
+                            accepted_item.pop(field_name, None)
+                    if key == "competitors":
+                        for field_name in ("strengths", "weaknesses"):
+                            values = accepted_item.get(field_name)
+                            if isinstance(values, list):
+                                accepted_item[field_name] = [
+                                    value for value in values
+                                    if self._evidence_supports_text(
+                                        value, item.get("evidence_quotes")
+                                    )
+                                ]
+                        competitor_swot = accepted_item.get("swot")
+                        if isinstance(competitor_swot, dict):
+                            accepted_item["swot"] = {
+                                field_name: [
+                                    claim for claim in claims
+                                    if self._evidence_supports_text(
+                                        claim, item.get("evidence_quotes")
+                                    )
+                                ]
+                                for field_name in (
+                                    "strengths", "weaknesses",
+                                    "opportunities", "threats",
+                                )
+                                if isinstance(
+                                    claims := competitor_swot.get(field_name), list
+                                )
+                            }
+                    if key in {"pricingTiers", "pricing_tiers"}:
+                        for field_name in ("features",):
+                            values = accepted_item.get(field_name)
+                            if isinstance(values, list):
+                                accepted_item[field_name] = [
+                                    value for value in values
+                                    if self._evidence_supports_text(
+                                        value, item.get("evidence_quotes")
+                                    )
+                                ]
+                    if key == "products":
+                        features = accepted_item.get("features")
+                        accepted_features = []
+                        if isinstance(features, list):
+                            for feature in features:
+                                if not isinstance(feature, dict):
+                                    continue
+                                feature_urls = feature.get("evidence_urls")
+                                feature_quotes = feature.get("evidence_quotes")
+                                if (
+                                    self._has_valid_evidence_urls(
+                                        feature_urls, source_urls
+                                    )
+                                    and self._has_valid_evidence_quotes(
+                                        feature_quotes, feature_urls, source_context
+                                    )
+                                    and self._evidence_supports_text(
+                                        feature.get("name"), feature_quotes
+                                    )
+                                ):
+                                    accepted_feature = dict(feature)
+                                    for field_name in ("description", "maturity"):
+                                        value = accepted_feature.get(field_name)
+                                        if (
+                                            isinstance(value, str)
+                                            and value.strip()
+                                            and not self._evidence_supports_text(
+                                                value, feature_quotes
+                                            )
+                                        ):
+                                            accepted_feature.pop(field_name, None)
+                                    adoption = accepted_feature.get("adoption")
+                                    if (
+                                        adoption is not None
+                                        and not self._evidence_supports_number(
+                                            adoption,
+                                            feature_urls,
+                                            source_context,
+                                            feature_quotes,
+                                        )
+                                    ):
+                                        accepted_feature.pop("adoption", None)
+                                    accepted_features.append(accepted_feature)
+                        accepted_item["features"] = accepted_features
+                    if key in {"reports"}:
+                        sections = accepted_item.get("sections")
+                        if isinstance(sections, list):
+                            accepted_item["sections"] = [
+                                section for section in sections
+                                if isinstance(section, dict)
+                                and self._evidence_supports_text(
+                                    section.get("heading"),
+                                    item.get("evidence_quotes"),
+                                )
+                                and self._evidence_supports_text(
+                                    section.get("body"),
+                                    item.get("evidence_quotes"),
+                                )
+                            ]
+                    numeric_fields = {
+                        "competitors": ("marketShare", "market_share", "growthRate", "growth_rate"),
+                        "products": ("startingPrice", "starting_price"),
+                        "pricingTiers": ("priceMonthly", "price_monthly"),
+                        "pricing_tiers": ("priceMonthly", "price_monthly"),
+                        "marketGaps": ("opportunityScore", "opportunity_score", "difficultyScore", "difficulty_score"),
+                        "market_gaps": ("opportunityScore", "opportunity_score", "difficultyScore", "difficulty_score"),
+                        "metric_cards": ("value", "change"),
+                        "reports": ("pages",),
+                        "charts": (),
+                        "visualizations": (),
+                    }.get(key, ())
+                    for field_name in numeric_fields:
+                        number = accepted_item.get(field_name)
+                        if (
+                            number is not None
+                            and not self._evidence_supports_number(
+                                number,
+                                item.get("evidence_urls"),
+                                source_context,
+                                item.get("evidence_quotes"),
+                                percent=field_name in {
+                                    "marketShare", "market_share",
+                                    "growthRate", "growth_rate",
+                                },
+                            )
+                        ):
+                            accepted_item.pop(field_name, None)
+                    if key in {"competitors"}:
+                        for field_name in ("market_share", "growth_rate"):
+                            if field_name in accepted_item:
+                                canonical = (
+                                    "marketShare" if field_name == "market_share"
+                                    else "growthRate"
+                                )
+                                accepted_item.setdefault(canonical, accepted_item[field_name])
+                                accepted_item.pop(field_name, None)
+                    if key in {"products"} and "starting_price" in accepted_item:
+                        accepted_item.setdefault(
+                            "startingPrice", accepted_item.pop("starting_price")
+                        )
+                    if key in {"pricingTiers", "pricing_tiers"} and "price_monthly" in accepted_item:
+                        accepted_item.setdefault(
+                            "priceMonthly", accepted_item.pop("price_monthly")
+                        )
+                accepted.append(accepted_item)
+            return accepted
+
+        summary_evidence_valid = not evidence_required or self._has_valid_evidence_urls(
+            llm_response.get("summary_evidence_urls"), source_urls
+        ) and self._has_valid_evidence_quotes(
+            llm_response.get("summary_evidence_quotes"),
+            llm_response.get("summary_evidence_urls"),
+            source_context,
+        )
+        business_summary_supported = summary_evidence_valid and (
+            not evidence_required or self._evidence_supports_text(
+            llm_response.get("business_summary"),
+            llm_response.get("summary_evidence_quotes"),
+            )
+        )
+        executive_summary_supported = summary_evidence_valid and (
+            not evidence_required or self._evidence_supports_text(
+            llm_response.get("executive_summary"),
+            llm_response.get("summary_evidence_quotes"),
+            )
+        )
+        positioning_supported = not evidence_required or self._has_valid_evidence_urls(
+            llm_response.get("positioning_evidence_urls"), source_urls
+        ) and self._has_valid_evidence_quotes(
+            llm_response.get("positioning_evidence_quotes"),
+            llm_response.get("positioning_evidence_urls"),
+            source_context,
+        ) and self._evidence_supports_text(
+            llm_response.get("positioning"),
+            llm_response.get("positioning_evidence_quotes"),
+        )
+        raw_swot = llm_response.get("swot")
+        swot_claims = [
+            raw_swot.get(field)
+            for field in ("strengths", "weaknesses", "opportunities", "threats")
+        ] if isinstance(raw_swot, dict) else []
+        swot_supported = not evidence_required or (
+            self._has_valid_evidence_urls(
+            llm_response.get("swot_evidence_urls"), source_urls
+            )
+            and self._has_valid_evidence_quotes(
+            llm_response.get("swot_evidence_quotes"),
+            llm_response.get("swot_evidence_urls"),
+            source_context,
+            )
+            and all(
+                isinstance(claims, list)
+                and all(
+                    self._evidence_supports_text(
+                        claim, llm_response.get("swot_evidence_quotes")
+                    )
+                    for claim in claims
+                )
+                for claims in swot_claims
+            )
+        )
+
+        validated_competitors = records(
+            "competitors", require_name_evidence=True
+        )
+        if evidence_required:
+            for competitor in validated_competitors:
+                competitor["id"] = self._slugify(str(competitor.get("name") or ""))
+        competitor_ids = {
+            str(competitor.get("id") or "")
+            for competitor in validated_competitors
+        }
+        validated_products = records("products")
+        validated_pricing = records("pricingTiers") or records("pricing_tiers")
+        if evidence_required:
+            for record in [*validated_products, *validated_pricing]:
+                competitor_id = record.get(
+                    "competitorId", record.get("competitor_id")
+                )
+                if (
+                    competitor_id is not None
+                    and self._slugify(str(competitor_id)) not in competitor_ids
+                ):
+                    record.pop("competitorId", None)
+                    record.pop("competitor_id", None)
 
         # Build the BusinessProfile from the form (LLMPing is not
         # allowed to invent fields that contradict the user's input).
@@ -2855,14 +3334,19 @@ class Orchestrator:
             differentiators=form_input.differentiators or "",
             research_goals=form_input.research_goals or [],
             user_query=form_input.user_query or "",
-            summary=str(llm_response.get("business_summary") or ""),
+            summary=(
+                str(llm_response.get("business_summary") or "")
+                if business_summary_supported else ""
+            ),
         )
 
         # LLMPing output hardening: a scalar where a list/dict is
         # expected must degrade to empty, not crash response
         # construction (a string "gaps" would otherwise iterate
         # into single characters) — task: never trust LLM shape.
-        market_info_raw = llm_response.get("market_info")
+        market_info_raw = (
+            llm_response.get("market_info") if not evidence_required else {}
+        )
         market_info = (
             market_info_raw
             if isinstance(market_info_raw, dict)
@@ -2872,80 +3356,87 @@ class Orchestrator:
         return AnalysisResult(
             business_summary=(
                 str(llm_response.get("business_summary") or "")
-                or str(llm_response.get("answer") or "")
+                if executive_summary_supported else ""
             ),
             profile=profile,
-            executive_summary=str(llm_response.get("executive_summary") or ""),
-            market_info=market_info,
-            positioning=str(llm_response.get("positioning") or ""),
-            gaps=self._string_list(llm_response.get("gaps")),
-            opportunities=self._string_list(
-                llm_response.get("opportunities")
+            executive_summary=(
+                str(llm_response.get("executive_summary") or "")
+                if business_summary_supported else ""
             ),
-            risks=self._string_list(llm_response.get("risks")),
+            market_info=market_info,
+            positioning=(
+                str(llm_response.get("positioning") or "")
+                if positioning_supported else ""
+            ),
+            gaps=(
+                self._string_list(llm_response.get("gaps"))
+                if not evidence_required else []
+            ),
+            opportunities=(
+                self._string_list(llm_response.get("opportunities"))
+                if not evidence_required else []
+            ),
+            risks=(
+                self._string_list(llm_response.get("risks"))
+                if not evidence_required else []
+            ),
             competitors=[
                 self._to_competitor(c)
-                for c in llm_response.get("competitors", []) or []
-                if isinstance(c, dict)
-                and isinstance(c.get("name"), str)
-                and c["name"].strip()
+                for c in validated_competitors
+                if isinstance(c.get("name"), str) and c["name"].strip()
             ],
             products=[
                 self._to_product(p)
-                for p in llm_response.get("products", []) or []
-                if isinstance(p, dict)
+                for p in validated_products
             ],
             pricing_tiers=[
                 self._to_pricing_tier(p)
-                for p in (
-                    llm_response.get("pricingTiers")
-                    or llm_response.get("pricing_tiers")
-                    or []
-                )
-                if isinstance(p, dict)
+                for p in validated_pricing
             ],
             market_gaps=[
                 self._to_market_gap(g)
                 for g in (
-                    llm_response.get("marketGaps")
-                    or llm_response.get("market_gaps")
-                    or []
+                    records("marketGaps") or records("market_gaps")
                 )
-                if isinstance(g, dict)
             ],
             insights=[
                 self._to_insight(i)
-                for i in llm_response.get("insights", []) or []
-                if isinstance(i, dict)
+                for i in records("insights")
             ],
             recommendations=[
                 self._to_insight(r, category="Recommendation")
-                for r in llm_response.get("recommendations", []) or []
-                if isinstance(r, dict)
+                for r in records("recommendations")
             ],
             action_plan=[
                 self._to_action_item(a)
-                for a in llm_response.get("action_plan", []) or []
-                if isinstance(a, dict)
+                for a in records("action_plan")
             ],
             reports=[
                 self._to_report(r)
-                for r in llm_response.get("reports", []) or []
-                if isinstance(r, dict)
+                for r in records("reports")
+                if isinstance(r.get("title"), str) and r["title"].strip()
             ],
-            report=str(llm_response.get("report") or ""),
-            charts=self._sanitize_charts(
-                llm_response.get("visualizations")
-                or llm_response.get("charts")
+            report=(
+                str(llm_response.get("report") or "")
+                if not evidence_required else ""
+            ),
+            charts=(
+                []
+                if evidence_required
+                else self._sanitize_charts(
+                    records("visualizations") or records("charts")
+                )
             ),
             metric_cards=self._sanitize_metric_cards(
-                llm_response.get("metric_cards")
+                records("metric_cards")
             ),
-            swot=self._to_swot(llm_response.get("swot")),
+            swot=(
+                self._to_swot(llm_response.get("swot"))
+                if swot_supported else SWOT()
+            ),
             comparisons=[
                 self._to_comparison(c)
-                for c in llm_response.get("comparisons", []) or []
-                if isinstance(c, dict)
+                for c in records("comparisons")
             ],
             sources=self._sanitize_sources(
                 llm_response.get("sources"), research
@@ -3016,8 +3507,11 @@ class Orchestrator:
                 id=str(f.get("id") or ""),
                 name=str(f.get("name") or ""),
                 description=str(f.get("description") or ""),
-                maturity=str(f.get("maturity") or ""),
-                adoption=self._to_float(f.get("adoption")),
+                maturity=(
+                    str(f.get("maturity"))
+                    if f.get("maturity") is not None else None
+                ),
+                adoption=self._optional_float(f.get("adoption")),
             )
             for f in p.get("features") or []
             if isinstance(f, dict)
@@ -3040,13 +3534,13 @@ class Orchestrator:
         )
 
     def _to_pricing_tier(self, p: dict[str, Any]) -> PricingTier:
-        price = p.get("priceMonthly", p.get("price_monthly", "Custom"))
-        if price is None:
-            price = "Custom"
-        elif isinstance(price, bool) or not isinstance(price, (int, float)):
-            price = str(price)
-        else:
+        price = p.get("priceMonthly", p.get("price_monthly"))
+        if isinstance(price, bool):
+            price = None
+        elif isinstance(price, (int, float)) and math.isfinite(float(price)):
             price = float(price)
+        elif price is not None and not isinstance(price, str):
+            price = None
         return PricingTier(
             id=str(p.get("id") or ""),
             competitorId=str(p.get("competitorId") or p.get("competitor_id") or ""),
@@ -3064,8 +3558,8 @@ class Orchestrator:
             id=str(g.get("id") or ""),
             title=str(g.get("title") or ""),
             description=str(g.get("description") or ""),
-            opportunityScore=self._to_float(g.get("opportunityScore", g.get("opportunity_score"))),
-            difficultyScore=self._to_float(g.get("difficultyScore", g.get("difficulty_score"))),
+            opportunityScore=self._optional_float(g.get("opportunityScore", g.get("opportunity_score"))),
+            difficultyScore=self._optional_float(g.get("difficultyScore", g.get("difficulty_score"))),
             estimatedRevenue=str(g.get("estimatedRevenue") or g.get("estimated_revenue") or ""),
             affectedSegments=[
                 str(s) for s in g.get("affectedSegments") or g.get("affected_segments") or []
@@ -3088,7 +3582,7 @@ class Orchestrator:
                 IMPACT_LEVELS,
                 "Medium",
             ),
-            confidence=self._to_float(i.get("confidence"), 50.0),
+            confidence=self._optional_float(i.get("confidence")),
             relatedCompetitors=[
                 str(s)
                 for s in (
@@ -3138,7 +3632,13 @@ class Orchestrator:
             summary=str(r.get("summary") or ""),
             type=str(r.get("type") or ""),
             date=str(r.get("date") or ""),
-            pages=int(self._to_float(pages)) if pages is not None else 0,
+            pages=(
+                int(pages)
+                if isinstance(pages, (int, float))
+                and not isinstance(pages, bool)
+                and math.isfinite(float(pages))
+                else None
+            ),
             sections=sections,
         )
 
@@ -3427,6 +3927,7 @@ class Orchestrator:
                 )
                 for j, v in enumerate(data)
                 if isinstance(v, (int, float)) and not isinstance(v, bool)
+                and math.isfinite(float(v))
             ]
             series.append(
                 ChartSeries(
@@ -3446,17 +3947,24 @@ class Orchestrator:
 
     @staticmethod
     def _to_chart_series(s: dict[str, Any]) -> ChartSeries | None:
-        points = [
-            ChartPoint(
-                label=str(p.get("label") or ""),
-                value=float(
-                    Orchestrator._to_float(p.get("value"))
-                ),
-                color=p.get("color") or None,
+        points = []
+        for point in s.get("points") or []:
+            if not isinstance(point, dict):
+                continue
+            value = point.get("value")
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+            ):
+                continue
+            points.append(
+                ChartPoint(
+                    label=str(point.get("label") or ""),
+                    value=float(value),
+                    color=point.get("color") or None,
+                )
             )
-            for p in s.get("points") or []
-            if isinstance(p, dict)
-        ]
         return ChartSeries(
             id=str(s.get("id") or ""),
             name=str(s.get("name") or ""),
@@ -3473,7 +3981,11 @@ class Orchestrator:
             if not isinstance(c, dict):
                 continue
             value = c.get("value")
-            if not isinstance(value, (int, float)):
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+            ):
                 continue
             try:
                 out.append(
@@ -3495,32 +4007,239 @@ class Orchestrator:
 
     def _sanitize_sources(
         self,
-        llm_sources: Any,
+        _llm_sources: Any,
         research: dict[str, Any],
     ) -> list[Source]:
-        """Collect sources from LLMPing + every WebHunter result."""
+        """Return source records that were actually returned by WebHunter."""
         out: list[Source] = []
-        seen: set[str] = set()
-
-        def add(source: Source | None) -> None:
-            if source is None:
-                return
-            key = source.url or source.title
-            if key:
-                if key in seen:
-                    return
-                seen.add(key)
-            out.append(source)
-
-        if isinstance(llm_sources, list):
-            for i, s in enumerate(llm_sources):
-                add(self._to_source(s, i))
-        for payload in (research or {}).values():
-            if not isinstance(payload, dict):
-                continue
-            for i, s in enumerate(payload.get("sources") or []):
-                add(self._to_source(s, i))
+        source_data = self._provider_source_data(research)
+        for item in source_data.values():
+            out.append(item["source"])
         return out
+
+    def _provider_source_data(
+        self,
+        research: dict[str, Any] | None,
+    ) -> dict[str, dict[str, Any]]:
+        """Index provider source metadata and fetched text by its actual URL."""
+        if not isinstance(research, dict):
+            return {}
+        by_url: dict[str, dict[str, Any]] = {}
+
+        def add(raw: Any, content: Any = "") -> None:
+            source = self._to_source(raw, len(by_url))
+            if source is None or not source.url:
+                return
+            normalized_url = self._normalize_evidence_url(source.url)
+            if not normalized_url:
+                return
+            entry = by_url.setdefault(
+                normalized_url,
+                {"source": source, "text": ""},
+            )
+            pieces = [
+                source.title,
+                source.publisher or "",
+                source.snippet or "",
+                content if isinstance(content, str) else "",
+            ]
+            entry["text"] = " ".join(
+                part for part in [entry["text"], *pieces] if part
+            )
+
+        raw_results = research.get("results")
+        topics = (
+            raw_results.values()
+            if isinstance(raw_results, dict)
+            else research.values()
+        )
+        for topic in topics:
+            if not isinstance(topic, dict):
+                continue
+            for item in topic.get("sources") or []:
+                add(item)
+            for item in topic.get("crawled") or []:
+                add(item, item.get("content") if isinstance(item, dict) else "")
+
+        raw = research.get("raw")
+        if isinstance(raw, dict):
+            for item in raw.get("search_results") or []:
+                add(item)
+            for item in raw.get("crawled_contents") or []:
+                add(item, item.get("content") if isinstance(item, dict) else "")
+        return by_url
+
+    @staticmethod
+    def _normalize_evidence_url(value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        try:
+            parsed = urlsplit(value.strip())
+            if (
+                parsed.scheme.lower() not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+            ):
+                return ""
+            host = parsed.hostname.casefold().rstrip(".")
+            if host.startswith("www."):
+                host = host[4:]
+            port = parsed.port
+        except ValueError:
+            return ""
+        netloc = host if port is None or port == (443 if parsed.scheme.lower() == "https" else 80) else f"{host}:{port}"
+        path = parsed.path.rstrip("/") or "/"
+        ignored_query_prefixes = ("utm_",)
+        ignored_query_keys = {"fbclid", "gclid", "mc_cid", "mc_eid"}
+        query = urlencode(
+            sorted(
+                (key, item)
+                for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+                if key.casefold() not in ignored_query_keys
+                and not key.casefold().startswith(ignored_query_prefixes)
+            ),
+            doseq=True,
+        )
+        return urlunsplit((parsed.scheme.lower(), netloc, path, query, ""))
+
+    @staticmethod
+    def _has_valid_evidence_urls(
+        value: Any,
+        known_urls: set[str],
+    ) -> bool:
+        return (
+            isinstance(value, list)
+            and bool(value)
+            and all(
+                isinstance(url, str)
+                and Orchestrator._normalize_evidence_url(url) in known_urls
+                for url in value
+            )
+        )
+
+    def _has_valid_evidence_quotes(
+        self,
+        quotes: Any,
+        evidence_urls: Any,
+        source_context: dict[str, dict[str, Any]],
+    ) -> bool:
+        if not isinstance(quotes, list) or not quotes:
+            return False
+        normalized_urls = [
+            self._normalize_evidence_url(url)
+            for url in evidence_urls
+            if isinstance(url, str)
+        ] if isinstance(evidence_urls, list) else []
+        if not normalized_urls or any(url not in source_context for url in normalized_urls):
+            return False
+        source_text = " ".join(
+            str(source_context[url].get("text") or "")
+            for url in normalized_urls
+        )
+        normalized_source = re.sub(r"[^a-z0-9]", "", source_text.casefold())
+        for quote in quotes:
+            if not isinstance(quote, str):
+                return False
+            normalized_quote = re.sub(r"[^a-z0-9]", "", quote.casefold())
+            if len(normalized_quote) < 20 or normalized_quote not in normalized_source:
+                return False
+        return True
+
+    @staticmethod
+    def _evidence_supports_text(value: Any, quotes: Any) -> bool:
+        if not isinstance(value, str) or not value.strip():
+            return False
+        if not isinstance(quotes, list) or not quotes:
+            return False
+        claim_words = {
+            word
+            for word in re.findall(r"[a-z0-9]+", value.casefold())
+            if len(word) > 2
+            and word not in {
+                "the", "and", "for", "with", "from", "that", "this",
+                "are", "was", "were", "has", "have", "had", "its",
+                "their", "they", "you", "your", "into", "than", "then",
+                "but", "not", "can", "will", "may", "per",
+            }
+        }
+        if not claim_words:
+            return False
+        quote_words = {
+            word
+            for quote in quotes
+            if isinstance(quote, str)
+            for word in re.findall(r"[a-z0-9]+", quote.casefold())
+        }
+        return bool(claim_words & quote_words) and (
+            len(claim_words & quote_words) / len(claim_words) >= 0.67
+        )
+
+    def _evidence_supports_number(
+        self,
+        value: Any,
+        evidence_urls: Any,
+        source_context: dict[str, dict[str, Any]],
+        quotes: Any,
+        *,
+        percent: bool = False,
+    ) -> bool:
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+        ):
+            return False
+        normalized_urls = [
+            self._normalize_evidence_url(url)
+            for url in evidence_urls
+            if isinstance(url, str)
+        ] if isinstance(evidence_urls, list) else []
+        if not normalized_urls or any(url not in source_context for url in normalized_urls):
+            return False
+        text = " ".join(
+            quote for quote in quotes if isinstance(quote, str)
+        ).casefold() if isinstance(quotes, list) else ""
+        number = float(value)
+        if number == 0:
+            if percent:
+                return bool(re.search(r"\b0(?:\.0+)?\s*%", text))
+            return bool(
+                re.search(r"\bfree\b", text)
+                or re.search(r"[$₹€£]\s*0(?:\.0+)?\b", text)
+            )
+        candidates = {f"{number:g}"}
+        if number.is_integer():
+            candidates.add(f"{int(number):,}")
+        for candidate in candidates:
+            token = rf"(?<![\d.]){re.escape(candidate)}(?![\d.])"
+            if percent:
+                token += r"\s*%"
+            if re.search(token, text):
+                return True
+        return False
+
+    def _evidence_mentions(
+        self,
+        name: str,
+        evidence_urls: Any,
+        source_context: dict[str, dict[str, Any]],
+    ) -> bool:
+        if not self._has_valid_evidence_urls(evidence_urls, set(source_context)):
+            return False
+        needle = name.casefold().strip()
+        normalized_needle = re.sub(r"[^a-z0-9]", "", needle)
+        if not needle:
+            return False
+        for url in evidence_urls:
+            normalized_url = self._normalize_evidence_url(url)
+            text = str(source_context[normalized_url].get("text") or "").casefold()
+            normalized_text = re.sub(r"[^a-z0-9]", "", text)
+            if needle in text or (
+                normalized_needle and normalized_needle in normalized_text
+            ):
+                return True
+        return False
 
     @staticmethod
     def _merge_sources(
