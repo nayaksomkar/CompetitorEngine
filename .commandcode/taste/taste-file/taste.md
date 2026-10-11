@@ -85,3 +85,4 @@
 - Market-share normalization/redistribution applies only when ≥2 competitors carry non-zero shares — a single non-zero share is that company's share, not the whole market, and must never be rescaled to 100%. Confidence: 0.8
 - Upstream no-data sentinel values (e.g., the extraction schema's pricingTier: "unknown") count as unavailable, not evidence — they must not mask a requested-metric gap in missing_data. Confidence: 0.7
 - Backend changes must preserve existing endpoint contracts, field names, and response shapes (backward compatibility with existing requests), including the existing endpoint's structured-action contract and allowlist. Confidence: 0.8
+- Wants the project's architecture / how-it-works documented in markdown files in the repo (README.md, ARCHITECTURE.md) — explicitly asked to "read the entire working" of the codebase and write it into md files, enough to explain the architecture. Confidence: 0.75
