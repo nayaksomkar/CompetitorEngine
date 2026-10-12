@@ -18,6 +18,16 @@ The orchestrator is **stateless**: conversation state lives in LLMPing (`session
 
 ---
 
+## Preview
+
+![Competitor Overview](https://raw.githubusercontent.com/NayakSomkar/CompetitorEngine/master/Competitor_01.png)
+![Competitor Analysis](https://raw.githubusercontent.com/NayakSomkar/CompetitorEngine/master/Competitor_02.png)
+![Competitor Details](https://raw.githubusercontent.com/NayakSomkar/CompetitorEngine/master/Competitor_03.png)
+![Competitor Comparison](https://raw.githubusercontent.com/NayakSomkar/CompetitorEngine/master/Competitor_04.png)
+![Competitor Insights](https://raw.githubusercontent.com/NayakSomkar/CompetitorEngine/master/Competitor_05.png)
+
+---
+
 ## How It Works
 
 1. The UI sends a request (form data or a natural-language intent).
